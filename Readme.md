@@ -19,3 +19,15 @@ This script automates:
 ```bash
 chmod +x setup.sh
 ./setup.sh
+
+
+
+```bash
+
+bash <(curl -s https://raw.githubusercontent.com/afshinakhgar/setupserver/master/setup.sh)
+
+OR 
+```bash
+
+bash <(wget -qO- https://raw.githubusercontent.com/afshinakhgar/setupserver/master/setup.sh)
+
