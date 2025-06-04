@@ -13,3 +13,10 @@
 ```bash
 chmod +x setup.sh
 ./setup.sh
+
+
+bash <(curl -s https://raw.githubusercontent.com/afshinakhgar/setupserver/master/setup.sh)
+
+
+bash <(wget -qO- https://raw.githubusercontent.com/afshinakhgar/setupserver/master/setup.sh)
+
