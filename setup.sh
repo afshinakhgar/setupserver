@@ -14,25 +14,21 @@ NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
 NGINX_LINK="/etc/nginx/sites-enabled/$DOMAIN"
 SSHD_CONFIG="/etc/ssh/sshd_config"
 
-# 1. Create directory structure
+# Create directory structure
 sudo mkdir -p "$PUBLIC_DIR"
 sudo chown root:root "$BASE_DIR"
 sudo chmod 755 "$BASE_DIR"
-sudo mkdir -p "$PUBLIC_DIR"
+sudo mkdir -p "$WEB_DIR"
+sudo chown "$USER":"$USER" "$WEB_DIR"
+sudo chmod 755 "$WEB_DIR"
 sudo chown "$USER":"$USER" "$PUBLIC_DIR"
+sudo chmod 755 "$PUBLIC_DIR"
 
-# 2. Create user with chroot to BASE_DIR and home in /web/public
+# Create user with chroot and set password
 sudo useradd -d "/web/public" -s /usr/sbin/nologin "$USER"
 sudo passwd "$USER"
 
-# 3. Set directory ownership
-sudo chown root:root "$BASE_DIR"
-sudo chmod 755 "$BASE_DIR"
-sudo chown root:root "$WEB_DIR"
-sudo chmod 755 "$WEB_DIR"
-sudo chown -R "$USER":"$USER" "$PUBLIC_DIR"
-
-# 4. Create nginx config
+# Nginx configuration
 sudo tee "$NGINX_CONF" > /dev/null <<EOF
 server {
     listen 80;
@@ -64,11 +60,11 @@ server {
 }
 EOF
 
-# Enable nginx site
+# Enable site and reload nginx
 sudo ln -s "$NGINX_CONF" "$NGINX_LINK"
 sudo nginx -t && sudo systemctl reload nginx
 
-# 5. SSH config for chroot jail
+# Add SFTP chroot jail to SSH config
 sudo tee -a "$SSHD_CONFIG" > /dev/null <<EOF
 
 Match User $USER
@@ -78,13 +74,16 @@ Match User $USER
     X11Forwarding no
 EOF
 
-# 6. Restart SSH service
+# Restart SSH service
 sudo systemctl restart ssh || sudo service ssh restart
 
-# 7. Create MySQL database and user
+# Create MySQL database and user
 sudo mysql -e "CREATE DATABASE IF NOT EXISTS \`$DBNAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
 sudo mysql -e "CREATE USER IF NOT EXISTS '$DBUSER'@'localhost' IDENTIFIED BY '$DBPASS';"
 sudo mysql -e "GRANT ALL PRIVILEGES ON \`$DBNAME\`.* TO '$DBUSER'@'localhost';"
 sudo mysql -e "FLUSH PRIVILEGES;"
 
-echo "✅ Done. SFTP access for '$USER' is ready, site config for $DOMAIN created, and MySQL DB '$DBNAME' with user '$DBUSER' created."
+echo "✅ Setup complete for $DOMAIN"
+echo "User: $USER"
+echo "Web root: $PUBLIC_DIR"
+echo "MySQL DB: $DBNAME, User: $DBUSER"
