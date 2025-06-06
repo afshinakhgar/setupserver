@@ -1,20 +1,25 @@
 #!/bin/bash
 
-DOMAIN="yourdomain.com"
-EMAIL="your-email@example.com"  # Replace with your real email
+# Ask for domain and email interactively
+read -p "Enter your domain (e.g. metabase.sabaai.ir): " DOMAIN
+read -p "Enter your email address (for Let's Encrypt): " EMAIL
 
+# Update and install necessary packages
 echo "🔧 Installing Docker, docker-compose, Nginx, and Certbot..."
 sudo apt update
 sudo apt install -y docker.io docker-compose nginx certbot python3-certbot-nginx
 
+# Start and enable Docker
 echo "✅ Enabling and starting Docker service..."
 sudo systemctl enable docker
 sudo systemctl start docker
 
+# Create project directory
 echo "📁 Creating Metabase project directory..."
 mkdir -p /opt/metabase
 cd /opt/metabase
 
+# Create docker-compose.yml
 echo "🧾 Creating docker-compose.yml..."
 cat <<EOF > docker-compose.yml
 version: '3.8'
@@ -35,9 +40,11 @@ volumes:
   metabase-data:
 EOF
 
+# Start Metabase with docker-compose
 echo "🚀 Starting Metabase using docker-compose..."
 docker-compose up -d
 
+# Create Nginx config for the domain
 echo "🌐 Creating Nginx configuration for domain: $DOMAIN"
 cat <<EOF | sudo tee /etc/nginx/sites-available/metabase
 server {
@@ -55,11 +62,13 @@ server {
 }
 EOF
 
-# Enable the site and reload Nginx
+# Enable the Nginx site and reload
 sudo ln -s /etc/nginx/sites-available/metabase /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 
+# Request SSL certificate
 echo "🔐 Requesting SSL certificate from Let's Encrypt..."
 sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
+# Done
 echo "🎉 Metabase is now running at: https://$DOMAIN"
