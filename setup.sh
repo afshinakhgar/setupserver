@@ -14,28 +14,29 @@ NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
 NGINX_LINK="/etc/nginx/sites-enabled/$DOMAIN"
 SSHD_CONFIG="/etc/ssh/sshd_config"
 
+# Create Linux user (skip if it already exists)
+if id "$USER" &>/dev/null; then
+    echo "ℹ️ User $USER already exists, skipping creation."
+else
+    sudo useradd -m -d "$BASE_DIR" -s /bin/bash "$USER"
+    sudo passwd "$USER"
+fi
+
 # Create directory structure
 sudo mkdir -p "$PUBLIC_DIR"
-sudo chown root:root "$BASE_DIR"
-sudo chmod 755 "$BASE_DIR"
-sudo mkdir -p "$WEB_DIR"
-sudo chown "$USER":"$USER" "$WEB_DIR"
-sudo chmod 755 "$WEB_DIR"
-sudo chown "$USER":"$USER" "$PUBLIC_DIR"
-sudo chmod 755 "$PUBLIC_DIR"
 
-# Create user with chroot and set password
-sudo useradd -d "/web/public" -s /usr/sbin/nologin "$USER"
-sudo passwd "$USER"
+# Set ownership and permissions for web directories
+sudo chown -R "$USER":"$USER" "$BASE_DIR"
+sudo chmod -R 755 "$BASE_DIR"
 
-# Nginx configuration
+# Create Nginx configuration for the new domain
 sudo tee "$NGINX_CONF" > /dev/null <<EOF
 server {
     listen 80;
     server_name $DOMAIN www.$DOMAIN;
     client_max_body_size 100M;
 
-    root /var/www/$DOMAIN/web/public;
+    root $PUBLIC_DIR;
     index index.php index.html index.htm;
 
     location / {
@@ -60,11 +61,12 @@ server {
 }
 EOF
 
-# Enable site and reload nginx
-sudo ln -s "$NGINX_CONF" "$NGINX_LINK"
+# Enable Nginx site and reload service
+sudo ln -sf "$NGINX_CONF" "$NGINX_LINK"
 sudo nginx -t && sudo systemctl reload nginx
 
-# Add SFTP chroot jail to SSH config
+# Configure SFTP chroot jail in SSH config (skip if already exists)
+if ! grep -q "Match User $USER" "$SSHD_CONFIG"; then
 sudo tee -a "$SSHD_CONFIG" > /dev/null <<EOF
 
 Match User $USER
@@ -73,16 +75,16 @@ Match User $USER
     AllowTcpForwarding no
     X11Forwarding no
 EOF
-
-# Restart SSH service
 sudo systemctl restart ssh || sudo service ssh restart
+fi
 
-# Create MySQL database and user
-sudo mysql -e "CREATE DATABASE IF NOT EXISTS \`$DBNAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
-sudo mysql -e "CREATE USER IF NOT EXISTS '$DBUSER'@'localhost' IDENTIFIED BY '$DBPASS';"
-sudo mysql -e "GRANT ALL PRIVILEGES ON \`$DBNAME\`.* TO '$DBUSER'@'localhost';"
-sudo mysql -e "FLUSH PRIVILEGES;"
+# Create MySQL database and user with root privileges
+sudo mysql -u root -e "CREATE DATABASE IF NOT EXISTS \`$DBNAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+sudo mysql -u root -e "CREATE USER IF NOT EXISTS '$DBUSER'@'localhost' IDENTIFIED BY '$DBPASS';"
+sudo mysql -u root -e "GRANT ALL PRIVILEGES ON \`$DBNAME\`.* TO '$DBUSER'@'localhost';"
+sudo mysql -u root -e "FLUSH PRIVILEGES;"
 
+# Final output
 echo "✅ Setup complete for $DOMAIN"
 echo "User: $USER"
 echo "Web root: $PUBLIC_DIR"
