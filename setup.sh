@@ -4,15 +4,14 @@ set -euo pipefail
 # =============================================
 # Universal PHP Site Bootstrap (SFTP chroot + Nginx + PHP-FPM + optional MySQL)
 # Works for: WordPress, Slim 4, generic PHP apps
-# Key fixes vs original:
-# - Ensure deploy user can WRITE code under web root while keeping chroot root owned by root.
-# - Safer PHP-FPM socket detection and explicit override.
-# - Nginx vhost does NOT rely on Debian-only snippets to avoid nginx -t failures.
-# - More robust MySQL handling (socket or password) and clearer prompts.
-# - Disable default nginx site to avoid accidental vhost conflicts.
+# Key fixes:
+# - Web root owned by deploy user, chroot root by root:root
+# - Portable Nginx config (no Debian-only snippets)
+# - PHP-FPM socket detection and override
+# - Optional MySQL DB creation with socket or password auth
+# - Disables default Nginx site to prevent conflicts
 # =============================================
 
-# ---------- helpers ----------
 die() { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "WARN: $*" >&2; }
 info() { echo "==> $*"; }
@@ -30,7 +29,6 @@ selinux_restorecon_if_present() {
   fi
 }
 
-# Try common PHP-FPM sockets, else scan /run/php
 _detect_php_fpm_sock() {
   local candidates=(
     "/run/php/php8.4-fpm.sock"
@@ -53,11 +51,7 @@ _enable_acl_mode() {
   has_cmd setfacl
 }
 
-# ---------- defaults ----------
-WWW_USER_DEFAULT="www-data"     # For Debian/Ubuntu. Use 'nginx' on RHEL/Alma if you adapt this script.
-APP_TYPES=(wordpress slim php)
-
-# ---------- args (optional flags) ----------
+WWW_USER_DEFAULT="www-data"
 PHP_FPM_SOCK_OVERRIDE=""
 WWW_USER="$WWW_USER_DEFAULT"
 while [[ $# -gt 0 ]]; do
@@ -78,12 +72,10 @@ USAGE
   esac
 done
 
-# ---------- preconditions ----------
 require_root
 has_cmd nginx || die "nginx not found. Install nginx first."
-has_cmd mysql || warn "mysql client not found. MySQL features will fail if used."
+has_cmd mysql || warn "mysql client not found."
 
-# ---------- inputs ----------
 read -rp "Domain (e.g. example.com): " DOMAIN
 read -rp "Linux username to create/use: " USER
 read -rp "App type [wordpress/slim/php]: " APP_TYPE
@@ -93,23 +85,19 @@ case "$APP_TYPE" in
   *) die "Unsupported app type. Use: wordpress | slim | php" ;;
 esac
 
-# Web root relative to /var/www/<domain>. Default web/public (common for Slim/modern setups)
 read -rp "Web root relative path [web/public]: " WEB_REL
 WEB_REL=${WEB_REL:-web/public}
 
-# Additional runtime-writable dirs (comma-separated, relative to web root). For generic apps.
 EXTRA_WRITABLE=""
 if [[ "$APP_TYPE" == "php" ]]; then
   read -rp "Extra runtime-writable dirs under web root (comma-separated) [none]: " EXTRA_WRITABLE
   EXTRA_WRITABLE=${EXTRA_WRITABLE:-}
 fi
 
-# MySQL optional
 read -rp "Create MySQL DB and user? [y/N]: " WANT_DB
 WANT_DB=${WANT_DB,,}; WANT_DB=${WANT_DB:-n}
 if [[ "$WANT_DB" == "y" ]]; then
   read -rp "MySQL root user [root]: " MYSQL_ROOT_USER; MYSQL_ROOT_USER=${MYSQL_ROOT_USER:-root}
-  # If using socket auth (no password), just press Enter here.
   read -srp "MySQL root password (leave empty if using socket auth): " MYSQL_ROOT_PASS; echo ""
   read -rp "Database name: " DBNAME
   read -rp "DB username: " DBUSER
@@ -117,11 +105,10 @@ if [[ "$WANT_DB" == "y" ]]; then
   [[ -n "${DBNAME:-}" && -n "${DBUSER:-}" && -n "${DBPASS:-}" ]] || die "DB name/user/pass are required."
 fi
 
-# ---------- derived paths ----------
-BASE_DIR="/var/www/$DOMAIN"        # must remain root:root for chroot
+BASE_DIR="/var/www/$DOMAIN"
 WEB_DIR="$BASE_DIR/${WEB_REL%/}"
 PUBLIC_DIR="$WEB_DIR"
-USER_HOME_IN_CHROOT="$BASE_DIR/home/$USER"  # optional writable area for SFTP (not used by nginx)
+USER_HOME_IN_CHROOT="$BASE_DIR/home/$USER"
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
 NGINX_LINK="/etc/nginx/sites-enabled/$DOMAIN"
 SSHD_CONFIG="/etc/ssh/sshd_config"
@@ -131,7 +118,6 @@ WWW_GROUP=$(id -gn "$WWW_USER" 2>/dev/null || echo "$WWW_USER")
 info "Using PHP-FPM socket: $PHP_FPM_SOCK"
 info "Web/PHP-FPM will run as user: $WWW_USER (group: $WWW_GROUP)"
 
-# ---------- system users ----------
 if id "$USER" &>/dev/null; then
   info "User $USER exists; skipping creation."
 else
@@ -140,20 +126,14 @@ else
   passwd "$USER"
 fi
 
-# ---------- directory structure ----------
 mkdir -p "$PUBLIC_DIR" "$USER_HOME_IN_CHROOT"
-# Chroot root must be owned by root and not writable by group/others
 chown root:root "$BASE_DIR"
 chmod 755 /var /var/www "$BASE_DIR"
 
-# Ensure web root exists and is OWNED by the deploy user so they can upload code.
 chown -R "$USER":"$USER" "$WEB_DIR"
-
-# default safe perms for code tree (readable by others, writable by the owner)
 find "$WEB_DIR" -type d -exec chmod 755 {} \; || true
 find "$WEB_DIR" -type f -exec chmod 644 {} \; || true
 
-# app-specific writable dirs
 declare -a WRITABLE_DIRS
 case "$APP_TYPE" in
   wordpress)
@@ -168,7 +148,6 @@ case "$APP_TYPE" in
   *) ;;
 esac
 
-# create writable dirs
 for d in "${WRITABLE_DIRS[@]:-}"; do
   [[ -z "$d" ]] && continue
   if [[ "$d" == ../* ]]; then
@@ -178,7 +157,6 @@ for d in "${WRITABLE_DIRS[@]:-}"; do
   fi
 done
 
-# ownership and permissions for site user on writable dirs
 for d in "${WRITABLE_DIRS[@]:-}"; do
   [[ -z "$d" ]] && continue
   target_dir=""
@@ -192,11 +170,10 @@ for d in "${WRITABLE_DIRS[@]:-}"; do
   chmod g+s "$target_dir" || true
 done
 
-# ---------- PHP-FPM access model (ACL preferred, group fallback) ----------
 ACL_MODE=0
 if _enable_acl_mode; then
   ACL_MODE=1
-  info "Using ACL mode. Granting $WWW_USER read/execute on code and rwx on writable dirs."
+  info "Using ACL mode."
   setfacl -m u:"$WWW_USER":rx "$WEB_DIR" || true
   setfacl -R -m u:"$WWW_USER":rx "$PUBLIC_DIR" || true
   for d in "${WRITABLE_DIRS[@]:-}"; do
@@ -210,7 +187,7 @@ if _enable_acl_mode; then
     fi
   done
 else
-  warn "ACL not available; using group fallback. Adding $USER to group $WWW_GROUP."
+  warn "ACL not available; using group fallback."
   usermod -aG "$WWW_GROUP" "$USER" || true
   for d in "${WRITABLE_DIRS[@]:-}"; do
     [[ -z "$d" ]] && continue
@@ -224,7 +201,6 @@ else
   done
 fi
 
-# Make wp-config.php readable by PHP-FPM if present WITHOUT changing ownership away from the deploy user.
 if [[ -f "$PUBLIC_DIR/wp-config.php" ]]; then
   if [[ $ACL_MODE -eq 1 ]]; then
     setfacl -m u:"$WWW_USER":r "$PUBLIC_DIR/wp-config.php" || true
@@ -234,7 +210,6 @@ if [[ -f "$PUBLIC_DIR/wp-config.php" ]]; then
   fi
 fi
 
-# ---------- Nginx vhost ----------
 mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled || true
 cat > "$NGINX_CONF" <<EOF
 server {
@@ -249,31 +224,27 @@ server {
         try_files \$uri \$uri/ /index.php?\$args;
     }
 
-    location ~ \\.php$ {
-        # We avoid distro-specific include snippets to stay portable.
+    location ~ \.php$ {
         fastcgi_pass unix:$PHP_FPM_SOCK;
         include /etc/nginx/fastcgi_params;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param PATH_INFO \$fastcgi_path_info;
     }
 
-    location ~ /\\.ht { deny all; }
+    location ~ /\.ht { deny all; }
 
-    location ~* \\.(jpg|jpeg|png|gif|ico|css|js|woff2?|ttf|svg|eot)$ {
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js|woff2?|ttf|svg|eot)$ {
         expires 365d;
         access_log off;
     }
 }
 EOF
 ln -sf "$NGINX_CONF" "$NGINX_LINK"
-# Disable the default site if present to prevent conflicts
 rm -f /etc/nginx/sites-enabled/default || true
 
 nginx -t
 systemctl reload nginx || true
 
-# ---------- SSHD SFTP chroot ----------
-SSHD_CONFIG="/etc/ssh/sshd_config"
 if ! grep -qE '^Subsystem[[:space:]]+sftp[[:space:]]+internal-sftp' "$SSHD_CONFIG"; then
   if grep -qE '^Subsystem[[:space:]]+sftp' "$SSHD_CONFIG"; then
     sed -i 's|^Subsystem[[:space:]]\+sftp.*|Subsystem sftp internal-sftp|' "$SSHD_CONFIG"
@@ -294,19 +265,16 @@ fi
 restart_service_safe ssh
 restart_service_safe sshd
 
-# ---------- MySQL (optional) ----------
 if [[ "$WANT_DB" == "y" ]]; then
   has_cmd mysql || die "mysql client not found."
-  # Prefer socket if password empty, else use password auth.
   MYSQL_CMD=(mysql -u "$MYSQL_ROOT_USER")
   if [[ -n "${MYSQL_ROOT_PASS:-}" ]]; then
     MYSQL_CMD+=( -p"$MYSQL_ROOT_PASS" )
   else
-    # Common Debian/Ubuntu socket path
     [[ -S /var/run/mysqld/mysqld.sock ]] && MYSQL_CMD+=( -S /var/run/mysqld/mysqld.sock )
   fi
   if ! "${MYSQL_CMD[@]}" -e "SELECT 1;" >/dev/null 2>&1; then
-    die "Cannot authenticate to MySQL as $MYSQL_ROOT_USER (check password or socket auth)."
+    die "Cannot authenticate to MySQL as $MYSQL_ROOT_USER."
   fi
   DB_ESC="\`$DBNAME\`"; USER_ESC="'$DBUSER'@'localhost'"
   SQL=$(cat <<SQL_EOF
@@ -319,10 +287,97 @@ SQL_EOF
   echo "$SQL" | "${MYSQL_CMD[@]}"
 fi
 
+# ---------- WordPress auto-install (if selected) ----------
+if [[ "$APP_TYPE" == "wordpress" ]]; then
+  info "Preparing WordPress files under $PUBLIC_DIR"
+
+  # Ensure tools
+  if has_cmd apt-get; then apt-get update -y || true; fi
+  has_cmd curl || { has_cmd apt-get && apt-get install -y curl || true; }
+  has_cmd unzip || { has_cmd apt-get && apt-get install -y unzip || true; }
+  has_cmd php || warn "php-cli is not installed; wp-cli may not work."
+
+  # Download WordPress core if index.php not present yet
+  if [[ ! -f "$PUBLIC_DIR/index.php" ]]; then
+    tmpdir=$(mktemp -d)
+    info "Downloading latest WordPress..."
+    curl -fsSL https://wordpress.org/latest.tar.gz | tar -xz -C "$tmpdir"
+    rsync -a --delete "$tmpdir/wordpress/" "$PUBLIC_DIR/"
+    rm -rf "$tmpdir"
+    chown -R "$USER":"$USER" "$PUBLIC_DIR"
+  else
+    info "WordPress files already present; skipping download."
+  fi
+
+  # Ensure uploads/cache dirs exist
+  mkdir -p "$PUBLIC_DIR/wp-content/uploads" "$PUBLIC_DIR/wp-content/cache"
+  chown -R "$USER":"$USER" "$PUBLIC_DIR/wp-content"
+
+  # Database credentials: use created ones if provided; otherwise prompt
+  if [[ "$WANT_DB" == "y" ]]; then
+    WP_DB_NAME="$DBNAME"; WP_DB_USER="$DBUSER"; WP_DB_PASS="$DBPASS"; WP_DB_HOST="localhost"
+  else
+    read -rp "Existing DB name for WordPress: " WP_DB_NAME
+    read -rp "Existing DB username: " WP_DB_USER
+    read -srp "Existing DB user password: " WP_DB_PASS; echo ""
+    read -rp "DB host [localhost]: " WP_DB_HOST; WP_DB_HOST=${WP_DB_HOST:-localhost}
+  fi
+
+  # Create wp-config.php if missing
+  if [[ ! -f "$PUBLIC_DIR/wp-config.php" && -f "$PUBLIC_DIR/wp-config-sample.php" ]]; then
+    cp "$PUBLIC_DIR/wp-config-sample.php" "$PUBLIC_DIR/wp-config.php"
+    sed -i "s/database_name_here/${WP_DB_NAME//\//\/}/" "$PUBLIC_DIR/wp-config.php"
+    sed -i "s/username_here/${WP_DB_USER//\//\/}/" "$PUBLIC_DIR/wp-config.php"
+    sed -i "s/password_here/${WP_DB_PASS//\//\/}/" "$PUBLIC_DIR/wp-config.php"
+    sed -i "s/localhost/${WP_DB_HOST//\//\/}/" "$PUBLIC_DIR/wp-config.php"
+    # Set FS_METHOD to direct to allow updates without FTP
+    grep -q "FS_METHOD" "$PUBLIC_DIR/wp-config.php" || echo "define('FS_METHOD','direct');" >> "$PUBLIC_DIR/wp-config.php"
+  fi
+
+  # Install wp-cli if missing
+  if ! has_cmd wp; then
+    info "Installing wp-cli..."
+    curl -fsSL -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+    chmod +x /usr/local/bin/wp || true
+  fi
+
+  # Add salts and run core install if not already installed
+  if has_cmd wp; then
+    if ! wp core is-installed --path="$PUBLIC_DIR" --allow-root >/dev/null 2>&1; then
+      info "Generating security salts and installing WordPress..."
+      wp config shuffle-salts --path="$PUBLIC_DIR" --allow-root || true
+      read -rp "Site title: " WP_TITLE
+      read -rp "Admin username: " WP_ADMIN_USER
+      read -srp "Admin password: " WP_ADMIN_PASS; echo ""
+      read -rp "Admin email: " WP_ADMIN_EMAIL
+      WP_URL="http://$DOMAIN"
+      wp core install --path="$PUBLIC_DIR" --url="$WP_URL" --title="$WP_TITLE" \
+        --admin_user="$WP_ADMIN_USER" --admin_password="$WP_ADMIN_PASS" --admin_email="$WP_ADMIN_EMAIL" \
+        --skip-email --allow-root
+      # Set pretty permalinks
+      wp rewrite structure '/%postname%/' --path="$PUBLIC_DIR" --allow-root
+      wp rewrite flush --hard --path="$PUBLIC_DIR" --allow-root
+    else
+      info "WordPress already installed at $PUBLIC_DIR; skipping wp core install."
+    fi
+  else
+    warn "wp command not found; skipped salt generation and core install."
+  fi
+
+  # Ensure PHP-FPM can read configs and write uploads (ACL or group)
+  if [[ $ACL_MODE -eq 1 ]]; then
+    setfacl -R -m u:"$WWW_USER":rx "$PUBLIC_DIR" || true
+    setfacl -R -m u:"$WWW_USER":rwx "$PUBLIC_DIR/wp-content" || true
+    setfacl -dR -m u:"$WWW_USER":rwx "$PUBLIC_DIR/wp-content" || true
+  else
+    chgrp -R "$WWW_GROUP" "$PUBLIC_DIR/wp-content" || true
+    chmod -R 775 "$PUBLIC_DIR/wp-content" || true
+  fi
+fi
+
 # ---------- SELinux contexts (if present) ----------
 selinux_restorecon_if_present
 
-# ---------- Summary ----------
 cat <<INFO
 
 Setup complete for $DOMAIN
@@ -335,15 +390,5 @@ Nginx conf:         $NGINX_CONF (enabled via $NGINX_LINK)
 PHP-FPM socket:     $PHP_FPM_SOCK (override with --php-fpm-sock)
 Web/PHP user:       $WWW_USER (group: $WWW_GROUP)
 ACL mode:           $([[ $ACL_MODE -eq 1 ]] && echo enabled || echo disabled)
-
-If group fallback mode was used:
-  - Start a new SSH session for $USER to refresh group membership in $WWW_GROUP.
-  - Ensure your deploy tool uploads into the web root or listed writable dirs.
-
-Useful checks:
-  nginx -t && systemctl reload nginx
-  ls -l /run/php/*.sock
-  journalctl -u nginx -n 100
-  journalctl -u php*-fpm -n 100
 
 INFO
