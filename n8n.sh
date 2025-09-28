@@ -1,46 +1,51 @@
 #!/bin/bash
 set -e
 
-echo "=== Multi n8n Setup Script ==="
+echo "Domain (e.g. n8n.dotroot.ir): "
+read DOMAIN
 
-# Prompt domain and email
-read -rp "Enter domain (e.g. n8naparat.dotroot.ir): " DOMAIN
-read -rp "Enter email for Let's Encrypt: " EMAIL
-read -rp "Enter internal port (e.g. 5680, 5681...): " PORT
+echo "Email for Let's Encrypt (e.g. you@example.com): "
+read EMAIL
 
-# Vars
-APP_DIR="/opt/n8n/$DOMAIN"
-DATA_DIR="$APP_DIR/data"
-ENV_FILE="$APP_DIR/.env"
+echo "Local port to map (e.g. 5680): "
+read HOST_PORT
+
+DATA_DIR="/opt/n8n/$DOMAIN"
+ENV_FILE="$DATA_DIR/.env"
 CONTAINER_NAME="n8n-${DOMAIN//./-}"
 
-echo "[+] Creating directories..."
-mkdir -p "$DATA_DIR"
+mkdir -p "$DATA_DIR/data"
 
-# Generate random credentials
-DB_ENC_KEY=$(openssl rand -hex 16)
-GENERIC_SECRET=$(openssl rand -hex 16)
-
-echo "[+] Writing $ENV_FILE ..."
+# ✅ Create .env file
 cat > "$ENV_FILE" <<EOF
 N8N_HOST=$DOMAIN
 N8N_PORT=5678
 WEBHOOK_URL=https://$DOMAIN/
-N8N_ENCRYPTION_KEY=$DB_ENC_KEY
-N8N_USER_MANAGEMENT_JWT_SECRET=$GENERIC_SECRET
+GENERIC_TIMEZONE=UTC
+DB_SQLITE_POOL_SIZE=2
+N8N_RUNNERS_ENABLED=true
+N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 EOF
 
-echo "[+] Starting Docker container: $CONTAINER_NAME ..."
+echo "[+] .env created at $ENV_FILE"
+
+# ✅ Run docker container
+docker stop $CONTAINER_NAME >/dev/null 2>&1 || true
+docker rm $CONTAINER_NAME >/dev/null 2>&1 || true
+
 docker run -d \
   --name $CONTAINER_NAME \
   --restart unless-stopped \
-  -p 127.0.0.1:$PORT:5678 \
-  -v $DATA_DIR:/home/node/.n8n \
+  -p 127.0.0.1:$HOST_PORT:5678 \
+  -v $DATA_DIR/data:/home/node/.n8n \
   --env-file $ENV_FILE \
   n8nio/n8n
 
-echo "[+] Writing Nginx config for $DOMAIN ..."
+echo "[+] Container $CONTAINER_NAME started on 127.0.0.1:$HOST_PORT"
+
+# ✅ Create Nginx config
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
+
 cat > "$NGINX_CONF" <<EOF
 server {
     listen 80;
@@ -59,12 +64,13 @@ server {
 EOF
 
 ln -sf "$NGINX_CONF" "/etc/nginx/sites-enabled/$DOMAIN"
+
 nginx -t && systemctl reload nginx
 
-echo "[+] Issuing SSL certificate with certbot ..."
+# ✅ Get SSL cert
 certbot certonly --webroot -w /var/www/letsencrypt -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
 
-echo "[+] Writing HTTPS config ..."
+# ✅ Replace Nginx config with SSL version
 cat > "$NGINX_CONF" <<EOF
 server {
     listen 443 ssl http2;
@@ -78,7 +84,7 @@ server {
     client_max_body_size 32m;
 
     location / {
-        proxy_pass http://127.0.0.1:$PORT;
+        proxy_pass http://127.0.0.1:$HOST_PORT;
         proxy_http_version 1.1;
 
         proxy_set_header Host \$host;
@@ -113,9 +119,4 @@ EOF
 
 nginx -t && systemctl reload nginx
 
-echo "================================================="
-echo "✅ n8n available at: https://$DOMAIN"
-echo "   Container: $CONTAINER_NAME"
-echo "   Port: $PORT"
-echo "   Env: $ENV_FILE"
-echo "================================================="
+echo "[+] Deployment complete. Access: https://$DOMAIN"
