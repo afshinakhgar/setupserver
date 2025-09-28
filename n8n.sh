@@ -1,44 +1,51 @@
 #!/bin/bash
 set -e
 
-echo "Domain (e.g. n8n.dotroot.ir): "
+echo "Domain (e.g. n8n.example.com): "
 read DOMAIN
 
-echo "Email for Let's Encrypt (e.g. you@example.com): "
+echo "Email for Let's Encrypt (used only if cert missing): "
 read EMAIL
 
-echo "Host port to map (e.g. 5680): "
-read HOST_PORT
-
-DATA_DIR="/opt/n8n/$DOMAIN"
-ENV_FILE="$DATA_DIR/.env"
+# -------------------------------
+# 1) Vars
+# -------------------------------
+BASE_DIR="/opt/n8n/$DOMAIN"
+DATA_DIR="$BASE_DIR/data"
+ENV_FILE="$BASE_DIR/.env"
 CONTAINER_NAME="n8n-${DOMAIN//./-}"
 
-mkdir -p "$DATA_DIR/data"
+# -------------------------------
+# 2) Pick free port
+# -------------------------------
+PORT=5680
+while ss -lnt | awk '{print $4}' | grep -q ":$PORT$"; do
+  PORT=$((PORT+1))
+done
+echo "[+] Using free port $PORT for $DOMAIN"
 
-# ✅ Always keep N8N_PORT=5678 inside container
+# -------------------------------
+# 3) Prepare folders & permissions
+# -------------------------------
+mkdir -p "$DATA_DIR"
+# Fix permissions for n8n user inside container
+chown -R 1000:1000 "$DATA_DIR"
+chmod -R 755 "$DATA_DIR"
+
+# -------------------------------
+# 4) Create .env
+# -------------------------------
 cat > "$ENV_FILE" <<EOF
-N8N_HOST=$DOMAIN
 N8N_PORT=5678
+N8N_EDITOR_BASE_URL=https://$DOMAIN/
 WEBHOOK_URL=https://$DOMAIN/
-GENERIC_TIMEZONE=UTC
-DB_SQLITE_POOL_SIZE=2
-N8N_RUNNERS_ENABLED=true
-N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 EOF
+chown 1000:1000 "$ENV_FILE"
+chmod 644 "$ENV_FILE"
 
-docker stop $CONTAINER_NAME >/dev/null 2>&1 || true
-docker rm $CONTAINER_NAME >/dev/null 2>&1 || true
-
-docker run -d \
-  --name $CONTAINER_NAME \
-  --restart unless-stopped \
-  -p 127.0.0.1:$HOST_PORT:5678 \
-  -v $DATA_DIR/data:/home/node/.n8n \
-  --env-file $ENV_FILE \
-  n8nio/n8n
-
-# ✅ Generate nginx config
+# -------------------------------
+# 5) Nginx config (HTTP for certbot)
+# -------------------------------
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
 cat > "$NGINX_CONF" <<EOF
 server {
@@ -56,15 +63,37 @@ server {
     }
 }
 EOF
-ln -sf "$NGINX_CONF" "/etc/nginx/sites-enabled/$DOMAIN"
 
+ln -sf "$NGINX_CONF" "/etc/nginx/sites-enabled/$DOMAIN"
+mkdir -p /var/www/letsencrypt
 nginx -t && systemctl reload nginx
 
-# ✅ Get SSL
-certbot certonly --webroot -w /var/www/letsencrypt -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
+# -------------------------------
+# 6) Issue cert if not exists
+# -------------------------------
+if [ ! -d "/etc/letsencrypt/live/$DOMAIN" ]; then
+  certbot certonly --webroot -w /var/www/letsencrypt -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive
+fi
 
-# ✅ Replace with SSL config
+# -------------------------------
+# 7) Final nginx (HTTPS + proxy)
+# -------------------------------
 cat > "$NGINX_CONF" <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+        default_type "text/plain";
+        allow all;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
 server {
     listen 443 ssl http2;
     server_name $DOMAIN;
@@ -77,7 +106,7 @@ server {
     client_max_body_size 32m;
 
     location / {
-        proxy_pass http://127.0.0.1:$HOST_PORT;
+        proxy_pass http://127.0.0.1:$PORT;
         proxy_http_version 1.1;
 
         proxy_set_header Host \$host;
@@ -93,23 +122,25 @@ server {
         proxy_buffering off;
     }
 }
-
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    location ^~ /.well-known/acme-challenge/ {
-        root /var/www/letsencrypt;
-        default_type "text/plain";
-        allow all;
-    }
-
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
 EOF
 
 nginx -t && systemctl reload nginx
 
-echo "[+] n8n is available at: https://$DOMAIN"
+# -------------------------------
+# 8) Run container
+# -------------------------------
+docker stop "$CONTAINER_NAME" 2>/dev/null || true
+docker rm "$CONTAINER_NAME" 2>/dev/null || true
+
+docker run -d \
+  --name "$CONTAINER_NAME" \
+  --restart unless-stopped \
+  -p 127.0.0.1:$PORT:5678 \
+  -v "$DATA_DIR:/home/node/.n8n" \
+  --env-file "$ENV_FILE" \
+  n8nio/n8n
+
+echo
+echo "[✓] n8n deployed at: https://$DOMAIN"
+echo "[i] Container: $CONTAINER_NAME"
+echo "[i] Local port: $PORT"
