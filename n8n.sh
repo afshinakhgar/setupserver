@@ -7,7 +7,7 @@ read DOMAIN
 echo "Email for Let's Encrypt (e.g. you@example.com): "
 read EMAIL
 
-echo "Local port to map (e.g. 5680): "
+echo "Host port to map (e.g. 5680): "
 read HOST_PORT
 
 DATA_DIR="/opt/n8n/$DOMAIN"
@@ -16,7 +16,7 @@ CONTAINER_NAME="n8n-${DOMAIN//./-}"
 
 mkdir -p "$DATA_DIR/data"
 
-# ✅ Create .env file
+# ✅ Always keep N8N_PORT=5678 inside container
 cat > "$ENV_FILE" <<EOF
 N8N_HOST=$DOMAIN
 N8N_PORT=5678
@@ -27,9 +27,6 @@ N8N_RUNNERS_ENABLED=true
 N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 EOF
 
-echo "[+] .env created at $ENV_FILE"
-
-# ✅ Run docker container
 docker stop $CONTAINER_NAME >/dev/null 2>&1 || true
 docker rm $CONTAINER_NAME >/dev/null 2>&1 || true
 
@@ -41,11 +38,8 @@ docker run -d \
   --env-file $ENV_FILE \
   n8nio/n8n
 
-echo "[+] Container $CONTAINER_NAME started on 127.0.0.1:$HOST_PORT"
-
-# ✅ Create Nginx config
+# ✅ Generate nginx config
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
-
 cat > "$NGINX_CONF" <<EOF
 server {
     listen 80;
@@ -62,15 +56,14 @@ server {
     }
 }
 EOF
-
 ln -sf "$NGINX_CONF" "/etc/nginx/sites-enabled/$DOMAIN"
 
 nginx -t && systemctl reload nginx
 
-# ✅ Get SSL cert
+# ✅ Get SSL
 certbot certonly --webroot -w /var/www/letsencrypt -d $DOMAIN --email $EMAIL --agree-tos --non-interactive
 
-# ✅ Replace Nginx config with SSL version
+# ✅ Replace with SSL config
 cat > "$NGINX_CONF" <<EOF
 server {
     listen 443 ssl http2;
@@ -119,4 +112,4 @@ EOF
 
 nginx -t && systemctl reload nginx
 
-echo "[+] Deployment complete. Access: https://$DOMAIN"
+echo "[+] n8n is available at: https://$DOMAIN"
