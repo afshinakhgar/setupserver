@@ -1,7 +1,6 @@
 #!/bin/bash
-set -e
 
-# === Step 1: Read configuration ===
+# Interactive input
 read -p "Enter your domain (default: example.com): " DOMAIN
 DOMAIN=${DOMAIN:-example.com}
 
@@ -12,22 +11,37 @@ PORT=${PORT:-3000}
 read -s -p "Enter password for PostgreSQL (used by Metabase): " DB_PASS
 echo ""
 
-# === Step 2: Install dependencies ===
-echo "🔧 Installing Docker, docker-compose, Nginx, and Certbot..."
-sudo apt update -y
-sudo apt install -y docker.io docker-compose nginx certbot python3-certbot-nginx curl
+echo "🔧 Preparing system and installing dependencies..."
 
-echo "✅ Enabling and starting Docker service..."
+# Fix possible containerd conflicts
+sudo apt remove -y docker docker-engine docker.io containerd runc containerd.io >/dev/null 2>&1
+sudo apt autoremove -y >/dev/null 2>&1
+sudo apt update -y
+sudo apt install -y ca-certificates curl gnupg lsb-release nginx certbot python3-certbot-nginx
+
+# Install official Docker repo if missing
+if ! command -v docker &> /dev/null; then
+    echo "🐳 Installing official Docker Engine..."
+    sudo mkdir -p /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+      https://download.docker.com/linux/ubuntu \
+      $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    sudo apt update -y
+    sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+fi
+
+# Enable and start Docker
 sudo systemctl enable docker
 sudo systemctl start docker
 
-# === Step 3: Create Metabase project ===
-echo "📁 Creating Metabase project directory..."
+# Create Metabase directory
+echo "📁 Setting up Metabase in /opt/metabase"
 mkdir -p /opt/metabase
-cd /opt/metabase
+cd /opt/metabase || exit
 
-# === Step 4: Create docker-compose.yml ===
-echo "🧾 Creating docker-compose.yml (using port $PORT)..."
+# Write docker-compose.yml
 cat <<EOF > docker-compose.yml
 services:
   postgres:
@@ -36,7 +50,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: metabase
-      POSTGRES_PASSWORD: "$DB_PASS"
+      POSTGRES_PASSWORD: "${DB_PASS}"
       POSTGRES_DB: metabase
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -53,7 +67,7 @@ services:
       MB_DB_DBNAME: metabase
       MB_DB_PORT: 5432
       MB_DB_USER: metabase
-      MB_DB_PASS: "$DB_PASS"
+      MB_DB_PASS: "${DB_PASS}"
       MB_DB_HOST: postgres
     restart: unless-stopped
 
@@ -61,15 +75,13 @@ volumes:
   pgdata:
 EOF
 
-# === Step 5: Start Metabase ===
-echo "🚀 Starting Metabase using Docker Compose..."
-docker compose down >/dev/null 2>&1 || true
+# Start Metabase
+echo "🚀 Starting Metabase (this may take ~1 min)..."
 docker compose up -d
 
-# === Step 6: Nginx configuration ===
+# Create Nginx config
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
-echo "🌐 Creating Nginx configuration for domain: $DOMAIN"
-cat <<EOF | sudo tee $NGINX_CONF
+cat <<EOF | sudo tee $NGINX_CONF > /dev/null
 server {
     listen 80;
     server_name $DOMAIN;
@@ -86,7 +98,7 @@ server {
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     location / {
-        proxy_pass http://localhost:$PORT;
+        proxy_pass http://localhost:$PORT/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -96,35 +108,17 @@ server {
 }
 EOF
 
+# Enable site
 sudo ln -sf "$NGINX_CONF" "/etc/nginx/sites-enabled/$DOMAIN"
+
+# Test & reload Nginx
 sudo nginx -t && sudo systemctl reload nginx
 
-# === Step 7: SSL Certificate ===
-echo "🔐 Requesting SSL certificate from Let's Encrypt..."
-sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL || true
+# Request or renew SSL
+echo "🔐 Requesting SSL certificate for $DOMAIN..."
+sudo certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL" || true
 
-# === Step 8: Health Check ===
-echo "🩺 Checking if Metabase is ready..."
-for i in {1..30}; do
-  STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/api/health || echo "000")
-  if [ "$STATUS" == "200" ]; then
-    echo "✅ Metabase is healthy and ready!"
-    break
-  fi
-  echo "⏳ Waiting for Metabase to start ($i/30)..."
-  sleep 5
-done
-
-# === Step 9: Show logs if failed ===
-if [ "$STATUS" != "200" ]; then
-  echo "❌ Metabase did not respond with 200 OK."
-  echo "📜 Showing container logs for debugging..."
-  docker logs --tail 50 metabase
-fi
-
-# === Step 10: Final Info ===
-echo ""
-echo "🎉 Metabase setup complete!"
+echo "✅ Metabase is ready!"
 echo "🌍 URL: https://$DOMAIN/setup/"
 echo "🗝️ PostgreSQL password: $DB_PASS"
 echo "🚪 Metabase port: $PORT"
