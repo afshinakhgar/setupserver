@@ -1,10 +1,14 @@
 #!/bin/bash
 
-# Ask for domain, email, and port interactively
+# Ask for domain, email, port, and DB password interactively
 read -p "Enter your domain (e.g. metabase.sabaai.ir): " DOMAIN
 read -p "Enter your email address (for Let's Encrypt): " EMAIL
 read -p "Enter port number for Metabase (default: 3000): " PORT
 PORT=${PORT:-3000}  # Default to 3000 if empty
+
+# Ask for PostgreSQL password (hidden input)
+read -s -p "Enter password for PostgreSQL (used by Metabase): " DB_PASS
+echo ""
 
 # Update and install necessary packages
 echo "🔧 Installing Docker, docker-compose, Nginx, and Certbot..."
@@ -33,7 +37,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: metabase
-      POSTGRES_PASSWORD: strong_password_here
+      POSTGRES_PASSWORD: ${DB_PASS}
       POSTGRES_DB: metabase
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -50,8 +54,9 @@ services:
       MB_DB_DBNAME: metabase
       MB_DB_PORT: 5432
       MB_DB_USER: metabase
-      MB_DB_PASS: strong_password_here
+      MB_DB_PASS: ${DB_PASS}
       MB_DB_HOST: postgres
+      MB_SITE_URL: https://${DOMAIN}
     restart: unless-stopped
 
 volumes:
@@ -69,6 +74,17 @@ cat <<EOF | sudo tee $NGINX_CONF
 server {
     listen 80;
     server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     location / {
         proxy_pass http://localhost:$PORT/;
@@ -76,7 +92,7 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Proto https;
     }
 }
 EOF
@@ -93,3 +109,4 @@ sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
 # Done
 echo "🎉 Metabase is now running at: https://$DOMAIN (proxied to localhost:$PORT)"
+echo "🗝️ PostgreSQL password you entered: ${DB_PASS}"
