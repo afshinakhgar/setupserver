@@ -1,8 +1,10 @@
 #!/bin/bash
 
-# Ask for domain and email interactively
+# Ask for domain, email, and port interactively
 read -p "Enter your domain (e.g. metabase.sabaai.ir): " DOMAIN
 read -p "Enter your email address (for Let's Encrypt): " EMAIL
+read -p "Enter port number for Metabase (default: 3000): " PORT
+PORT=${PORT:-3000}  # Default to 3000 if empty
 
 # Update and install necessary packages
 echo "🔧 Installing Docker, docker-compose, Nginx, and Certbot..."
@@ -20,7 +22,7 @@ mkdir -p /opt/metabase
 cd /opt/metabase
 
 # Create docker-compose.yml
-echo "🧾 Creating docker-compose.yml..."
+echo "🧾 Creating docker-compose.yml (using port $PORT)..."
 cat <<EOF > docker-compose.yml
 version: '3.8'
 
@@ -42,7 +44,7 @@ services:
     depends_on:
       - postgres
     ports:
-      - "3000:3000"
+      - "${PORT}:3000"
     environment:
       MB_DB_TYPE: postgres
       MB_DB_DBNAME: metabase
@@ -57,7 +59,7 @@ volumes:
 EOF
 
 # Start Metabase with docker-compose
-echo "🚀 Starting Metabase using docker-compose..."
+echo "🚀 Starting Metabase using docker-compose on port $PORT..."
 docker-compose up -d
 
 # Create Nginx config for the domain
@@ -69,7 +71,7 @@ server {
     server_name $DOMAIN;
 
     location / {
-        proxy_pass http://localhost:3000/;
+        proxy_pass http://localhost:$PORT/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -90,4 +92,4 @@ echo "🔐 Requesting SSL certificate from Let's Encrypt..."
 sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
 # Done
-echo "🎉 Metabase is now running at: https://$DOMAIN"
+echo "🎉 Metabase is now running at: https://$DOMAIN (proxied to localhost:$PORT)"
