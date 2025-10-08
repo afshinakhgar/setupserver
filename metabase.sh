@@ -37,7 +37,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: metabase
-      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_PASSWORD: "${DB_PASS}"
       POSTGRES_DB: metabase
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -54,9 +54,10 @@ services:
       MB_DB_DBNAME: metabase
       MB_DB_PORT: 5432
       MB_DB_USER: metabase
-      MB_DB_PASS: ${DB_PASS}
+      MB_DB_PASS: "${DB_PASS}"
       MB_DB_HOST: postgres
       MB_SITE_URL: https://${DOMAIN}
+      MB_JETTY_SSL: "false"
     restart: unless-stopped
 
 volumes:
