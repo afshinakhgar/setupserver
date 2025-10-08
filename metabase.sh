@@ -1,32 +1,27 @@
 #!/bin/bash
 
-# Ask for domain, email, port, and DB password interactively
-read -p "Enter your domain (e.g. metabase.sabaai.ir): " DOMAIN
+# --- Input variables ---
+read -p "Enter your domain (e.g. bi.giftooly.com): " DOMAIN
 read -p "Enter your email address (for Let's Encrypt): " EMAIL
-read -p "Enter port number for Metabase (default: 3000): " PORT
-PORT=${PORT:-3000}  # Default to 3000 if empty
+read -p "Enter port number for Metabase (default: 3003): " PORT
+PORT=${PORT:-3003}
 
-# Ask for PostgreSQL password (hidden input)
 read -s -p "Enter password for PostgreSQL (used by Metabase): " DB_PASS
 echo ""
 
-# Update and install necessary packages
+# --- Install dependencies ---
 echo "🔧 Installing Docker, docker-compose, Nginx, and Certbot..."
-sudo apt update
+sudo apt update -y
 sudo apt install -y docker.io docker-compose nginx certbot python3-certbot-nginx
 
-# Start and enable Docker
-echo "✅ Enabling and starting Docker service..."
 sudo systemctl enable docker
 sudo systemctl start docker
 
-# Create project directory
-echo "📁 Creating Metabase project directory..."
+# --- Create project folder ---
 mkdir -p /opt/metabase
 cd /opt/metabase
 
-# Create docker-compose.yml
-echo "🧾 Creating docker-compose.yml (using port $PORT)..."
+# --- Create docker-compose.yml ---
 cat <<EOF > docker-compose.yml
 version: '3.8'
 
@@ -58,19 +53,21 @@ services:
       MB_DB_HOST: postgres
       MB_SITE_URL: https://${DOMAIN}
       MB_JETTY_SSL: "false"
+      MB_EMBEDDED: "true"
+      MB_REDIRECT_ALL_REQUESTS_TO_HTTPS: "false"
     restart: unless-stopped
 
 volumes:
   pgdata:
 EOF
 
-# Start Metabase with docker-compose
-echo "🚀 Starting Metabase using docker-compose on port $PORT..."
-docker-compose up -d
+# --- Run Docker ---
+echo "🚀 Starting Metabase using Docker Compose..."
+docker compose down -v
+docker compose up -d
 
-# Create Nginx config for the domain
+# --- Create Nginx config ---
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
-echo "🌐 Creating Nginx configuration for domain: $DOMAIN"
 cat <<EOF | sudo tee $NGINX_CONF
 server {
     listen 80;
@@ -98,16 +95,16 @@ server {
 }
 EOF
 
-# Enable the Nginx site
+# --- Enable and reload Nginx ---
 sudo ln -sf "$NGINX_CONF" "/etc/nginx/sites-enabled/$DOMAIN"
-
-# Test Nginx and reload
 sudo nginx -t && sudo systemctl reload nginx
 
-# Request SSL certificate
-echo "🔐 Requesting SSL certificate from Let's Encrypt..."
+# --- Get SSL cert ---
+echo "🔐 Requesting SSL certificate..."
 sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
 
-# Done
-echo "🎉 Metabase is now running at: https://$DOMAIN (proxied to localhost:$PORT)"
-echo "🗝️ PostgreSQL password you entered: ${DB_PASS}"
+# --- Done ---
+echo "✅ Metabase is ready!"
+echo "🌍 URL: https://${DOMAIN}/setup/"
+echo "🗝️ PostgreSQL password: ${DB_PASS}"
+echo "🚪 Metabase port: ${PORT}"
