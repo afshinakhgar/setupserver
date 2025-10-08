@@ -1,31 +1,43 @@
 #!/bin/bash
 set -e
 
-DOMAIN=${1:-example.com}
-PORT=${2:-3004}
-DB_PASS=$(openssl rand -base64 12)
+echo "===================================="
+echo "🚀 Metabase Auto Installer (Final)"
+echo "===================================="
+
+# --- Step 1: Ask user inputs ---
+read -p "Enter your domain (e.g. bi.giftooly.com): " DOMAIN
+read -p "Enter Metabase port (default 3000): " PORT
+PORT=${PORT:-3000}
+read -p "Enter your email for SSL (e.g. admin@$DOMAIN): " EMAIL
+
+read -s -p "Enter PostgreSQL password: " DB_PASS
+echo ""
+
 METABASE_DIR="/opt/metabase"
 
-echo "🚀 Setting up Metabase for domain: $DOMAIN (port: $PORT)"
+echo "✅ Domain: $DOMAIN"
+echo "✅ Port: $PORT"
+echo "✅ Email: $EMAIL"
 
-# --- Step 1: Install dependencies ---
+# --- Step 2: Install dependencies ---
 echo "📦 Installing dependencies..."
 apt update -y
 apt install -y curl gnupg2 ca-certificates lsb-release apt-transport-https software-properties-common python3-certbot-nginx
 
-# --- Step 2: Fix Docker conflicts ---
+# --- Step 3: Fix Docker conflicts ---
 echo "🐳 Checking Docker installation..."
 apt remove -y containerd.io containerd docker.io docker-ce docker-ce-cli docker-ce-rootless-extras || true
 apt autoremove -y
-apt update -y
 curl -fsSL https://get.docker.com | bash
 systemctl enable --now docker
 
-# --- Step 3: Prepare folders ---
+# --- Step 4: Prepare directories ---
 mkdir -p "$METABASE_DIR"
 cd "$METABASE_DIR"
 
-# --- Step 4: Create docker-compose.yml ---
+# --- Step 5: Create docker-compose.yml ---
+echo "🧾 Creating docker-compose.yml..."
 cat > docker-compose.yml <<EOF
 services:
   postgres:
@@ -53,19 +65,20 @@ services:
       MB_DB_USER: metabase
       MB_DB_PASS: "${DB_PASS}"
       MB_DB_HOST: postgres
+      MB_JETTY_SSL: "false"
     restart: unless-stopped
 
 volumes:
   pgdata:
 EOF
 
-# --- Step 5: Start Metabase ---
-echo "🚀 Starting Metabase (this may take ~1 min)..."
+# --- Step 6: Run Docker ---
+echo "🚀 Starting Metabase..."
 docker compose down || true
 docker compose up -d
 
-# --- Step 6: Configure Nginx ---
-echo "🌐 Configuring Nginx for ${DOMAIN}..."
+# --- Step 7: Nginx Config ---
+echo "🌐 Setting up Nginx..."
 cat > /etc/nginx/sites-available/${DOMAIN} <<EOF
 server {
     listen 80;
@@ -94,21 +107,20 @@ server {
 EOF
 
 ln -sf /etc/nginx/sites-available/${DOMAIN} /etc/nginx/sites-enabled/${DOMAIN}
-nginx -t
-systemctl reload nginx
+nginx -t && systemctl reload nginx
 
-# --- Step 7: Setup SSL ---
-echo "🔐 Requesting SSL certificate for ${DOMAIN}..."
-certbot --nginx -d ${DOMAIN} --non-interactive --agree-tos -m admin@${DOMAIN} || true
+# --- Step 8: SSL Certificate ---
+echo "🔐 Requesting SSL certificate..."
+certbot --nginx -d ${DOMAIN} --non-interactive --agree-tos -m ${EMAIL} || true
 
-# --- Step 8: Cleanup MB_SITE_URL if exists ---
-echo "🧹 Resetting MB_SITE_URL to prevent redirect loops..."
-docker exec -it metabase bash -c 'unset MB_SITE_URL; echo "MB_SITE_URL cleared"'
-
-# --- Step 9: Restart Metabase ---
+# --- Step 9: Fix redirect issue (unset MB_SITE_URL) ---
+echo "🧹 Fixing redirect loop..."
+docker exec metabase bash -c 'unset MB_SITE_URL; unset MB_JETTY_SSL; echo "Metabase environment cleaned."'
 docker restart metabase
 
-echo "✅ Metabase setup completed!"
+echo "===================================="
+echo "✅ Metabase setup complete!"
 echo "🌍 URL: https://${DOMAIN}/setup/"
-echo "🗝️ PostgreSQL password: ${DB_PASS}"
-echo "🚪 Metabase port: ${PORT}"
+echo "🗝️ DB Password: ${DB_PASS}"
+echo "🚪 Port: ${PORT}"
+echo "===================================="
