@@ -25,19 +25,35 @@ cat <<EOF > docker-compose.yml
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:15
+    container_name: metabase_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: metabase
+      POSTGRES_PASSWORD: strong_password_here
+      POSTGRES_DB: metabase
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
   metabase:
     image: metabase/metabase
     container_name: metabase
+    depends_on:
+      - postgres
     ports:
       - "3000:3000"
-    volumes:
-      - metabase-data:/metabase-data
     environment:
-      MB_DB_FILE: /metabase-data/metabase.db
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_PORT: 5432
+      MB_DB_USER: metabase
+      MB_DB_PASS: strong_password_here
+      MB_DB_HOST: postgres
     restart: unless-stopped
 
 volumes:
-  metabase-data:
+  pgdata:
 EOF
 
 # Start Metabase with docker-compose
