@@ -1,30 +1,33 @@
 #!/bin/bash
 
-# --- Input variables ---
-read -p "Enter your domain (e.g. bi.giftooly.com): " DOMAIN
+# === Step 1: Read configuration ===
+read -p "Enter your domain (default: example.com): " DOMAIN
+DOMAIN=${DOMAIN:-example.com}
+
 read -p "Enter your email address (for Let's Encrypt): " EMAIL
-read -p "Enter port number for Metabase (default: 3003): " PORT
-PORT=${PORT:-3003}
+read -p "Enter port number for Metabase (default: 3000): " PORT
+PORT=${PORT:-3000}
 
 read -s -p "Enter password for PostgreSQL (used by Metabase): " DB_PASS
 echo ""
 
-# --- Install dependencies ---
+# === Step 2: Install dependencies ===
 echo "🔧 Installing Docker, docker-compose, Nginx, and Certbot..."
 sudo apt update -y
-sudo apt install -y docker.io docker-compose nginx certbot python3-certbot-nginx
+sudo apt install -y docker.io docker-compose nginx certbot python3-certbot-nginx curl
 
+echo "✅ Enabling and starting Docker service..."
 sudo systemctl enable docker
 sudo systemctl start docker
 
-# --- Create project folder ---
+# === Step 3: Create Metabase project ===
+echo "📁 Creating Metabase project directory..."
 mkdir -p /opt/metabase
 cd /opt/metabase
 
-# --- Create docker-compose.yml ---
+# === Step 4: Create docker-compose.yml ===
+echo "🧾 Creating docker-compose.yml (using port $PORT)..."
 cat <<EOF > docker-compose.yml
-version: '3.8'
-
 services:
   postgres:
     image: postgres:15
@@ -32,7 +35,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: metabase
-      POSTGRES_PASSWORD: "${DB_PASS}"
+      POSTGRES_PASSWORD: "$DB_PASS"
       POSTGRES_DB: metabase
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -49,25 +52,22 @@ services:
       MB_DB_DBNAME: metabase
       MB_DB_PORT: 5432
       MB_DB_USER: metabase
-      MB_DB_PASS: "${DB_PASS}"
+      MB_DB_PASS: "$DB_PASS"
       MB_DB_HOST: postgres
-      MB_SITE_URL: https://${DOMAIN}
-      MB_JETTY_SSL: "false"
-      MB_EMBEDDED: "true"
-      MB_REDIRECT_ALL_REQUESTS_TO_HTTPS: "false"
     restart: unless-stopped
 
 volumes:
   pgdata:
 EOF
 
-# --- Run Docker ---
+# === Step 5: Start Metabase ===
 echo "🚀 Starting Metabase using Docker Compose..."
-docker compose down -v
+docker compose down >/dev/null 2>&1
 docker compose up -d
 
-# --- Create Nginx config ---
+# === Step 6: Nginx configuration ===
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
+echo "🌐 Creating Nginx configuration for domain: $DOMAIN"
 cat <<EOF | sudo tee $NGINX_CONF
 server {
     listen 80;
@@ -85,7 +85,7 @@ server {
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     location / {
-        proxy_pass http://localhost:$PORT/;
+        proxy_pass http://localhost:$PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -95,16 +95,28 @@ server {
 }
 EOF
 
-# --- Enable and reload Nginx ---
 sudo ln -sf "$NGINX_CONF" "/etc/nginx/sites-enabled/$DOMAIN"
 sudo nginx -t && sudo systemctl reload nginx
 
-# --- Get SSL cert ---
-echo "🔐 Requesting SSL certificate..."
-sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL
+# === Step 7: SSL Certificate ===
+echo "🔐 Requesting SSL certificate from Let's Encrypt..."
+sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL || true
 
-# --- Done ---
-echo "✅ Metabase is ready!"
-echo "🌍 URL: https://${DOMAIN}/setup/"
-echo "🗝️ PostgreSQL password: ${DB_PASS}"
-echo "🚪 Metabase port: ${PORT}"
+# === Step 8: Health Check ===
+echo "🩺 Checking if Metabase is ready..."
+for i in {1..30}; do
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/api/health)
+  if [ "$STATUS" == "200" ]; then
+    echo "✅ Metabase is healthy and ready!"
+    break
+  fi
+  echo "⏳ Waiting for Metabase to start ($i/30)..."
+  sleep 5
+done
+
+# === Step 9: Final Info ===
+echo ""
+echo "🎉 Metabase setup complete!"
+echo "🌍 URL: https://$DOMAIN/setup/"
+echo "🗝️ PostgreSQL password: $DB_PASS"
+echo "🚪 Metabase port: $PORT"
