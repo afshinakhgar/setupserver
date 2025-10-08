@@ -29,3 +29,10 @@ OR
 
 bash <(wget -qO- https://raw.githubusercontent.com/afshinakhgar/setupserver/master/setup.sh)
 
+
+
+--- metabase
+
+bash <(curl -s https://raw.githubusercontent.com/afshinakhgar/setupserver/master/metabase.sh)
+
+
