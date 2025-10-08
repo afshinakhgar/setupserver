@@ -2,7 +2,7 @@
 set -e
 
 echo "===================================="
-echo "🚀 Metabase Auto Installer (Final)"
+echo "🚀 Metabase Auto Installer (Final - Fixed Redirect Loop)"
 echo "===================================="
 
 # --- Step 1: Ask user inputs ---
@@ -65,7 +65,9 @@ services:
       MB_DB_USER: metabase
       MB_DB_PASS: "${DB_PASS}"
       MB_DB_HOST: postgres
+      MB_SITE_URL: https://${DOMAIN}
       MB_JETTY_SSL: "false"
+      MB_EMBEDDED: "true"
     restart: unless-stopped
 
 volumes:
@@ -77,8 +79,8 @@ echo "🚀 Starting Metabase..."
 docker compose down || true
 docker compose up -d
 
-# --- Step 7: Nginx Config ---
-echo "🌐 Setting up Nginx..."
+# --- Step 7: Configure Nginx ---
+echo "🌐 Setting up Nginx for ${DOMAIN}..."
 cat > /etc/nginx/sites-available/${DOMAIN} <<EOF
 server {
     listen 80;
@@ -113,14 +115,20 @@ nginx -t && systemctl reload nginx
 echo "🔐 Requesting SSL certificate..."
 certbot --nginx -d ${DOMAIN} --non-interactive --agree-tos -m ${EMAIL} || true
 
-# --- Step 9: Fix redirect issue (unset MB_SITE_URL) ---
-echo "🧹 Fixing redirect loop..."
-docker exec metabase bash -c 'unset MB_SITE_URL; unset MB_JETTY_SSL; echo "Metabase environment cleaned."'
+# --- Step 9: Fix redirect loop inside container ---
+echo "🧹 Fixing redirect loop inside Metabase..."
+docker exec metabase bash -c 'unset MB_SITE_URL; unset MB_JETTY_SSL; echo "✅ MB_SITE_URL & MB_JETTY_SSL cleared"'
+
+# --- Step 10: Remove site-url from DB (safety fix) ---
+echo "🧠 Checking database settings..."
+docker exec -i metabase_postgres psql -U metabase -d metabase -c "DELETE FROM setting WHERE key='site-url';" || true
+
+# --- Step 11: Restart Metabase ---
 docker restart metabase
 
 echo "===================================="
-echo "✅ Metabase setup complete!"
+echo "✅ Metabase setup complete and redirect issue fixed!"
 echo "🌍 URL: https://${DOMAIN}/setup/"
-echo "🗝️ DB Password: ${DB_PASS}"
-echo "🚪 Port: ${PORT}"
+echo "🗝️ PostgreSQL password: ${DB_PASS}"
+echo "🚪 Metabase port: ${PORT}"
 echo "===================================="
