@@ -2,7 +2,7 @@
 set -e
 
 echo "===================================="
-echo "🚀 Metabase Auto Installer (Final - Fixed Redirect Loop)"
+echo "🚀 Metabase Auto Installer (Fixed v2)"
 echo "===================================="
 
 # --- Step 1: Ask user inputs ---
@@ -65,9 +65,8 @@ services:
       MB_DB_USER: metabase
       MB_DB_PASS: "${DB_PASS}"
       MB_DB_HOST: postgres
-      MB_SITE_URL: https://${DOMAIN}
       MB_JETTY_SSL: "false"
-      MB_EMBEDDED: "true"
+      MB_SITE_URL: http://localhost:3000
     restart: unless-stopped
 
 volumes:
@@ -79,8 +78,8 @@ echo "🚀 Starting Metabase..."
 docker compose down || true
 docker compose up -d
 
-# --- Step 7: Configure Nginx ---
-echo "🌐 Setting up Nginx for ${DOMAIN}..."
+# --- Step 7: Nginx Config ---
+echo "🌐 Setting up Nginx..."
 cat > /etc/nginx/sites-available/${DOMAIN} <<EOF
 server {
     listen 80;
@@ -103,7 +102,6 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto https;
     }
 }
 EOF
@@ -115,20 +113,14 @@ nginx -t && systemctl reload nginx
 echo "🔐 Requesting SSL certificate..."
 certbot --nginx -d ${DOMAIN} --non-interactive --agree-tos -m ${EMAIL} || true
 
-# --- Step 9: Fix redirect loop inside container ---
-echo "🧹 Fixing redirect loop inside Metabase..."
-docker exec metabase bash -c 'unset MB_SITE_URL; unset MB_JETTY_SSL; echo "✅ MB_SITE_URL & MB_JETTY_SSL cleared"'
-
-# --- Step 10: Remove site-url from DB (safety fix) ---
-echo "🧠 Checking database settings..."
-docker exec -i metabase_postgres psql -U metabase -d metabase -c "DELETE FROM setting WHERE key='site-url';" || true
-
-# --- Step 11: Restart Metabase ---
+# --- Step 9: Fix redirect issue ---
+echo "🧹 Fixing redirect environment..."
+docker exec metabase bash -c 'unset MB_SITE_URL; unset MB_JETTY_SSL; echo "Metabase env cleaned."'
 docker restart metabase
 
 echo "===================================="
-echo "✅ Metabase setup complete and redirect issue fixed!"
+echo "✅ Metabase setup complete!"
 echo "🌍 URL: https://${DOMAIN}/setup/"
-echo "🗝️ PostgreSQL password: ${DB_PASS}"
-echo "🚪 Metabase port: ${PORT}"
+echo "🗝️ DB Password: ${DB_PASS}"
+echo "🚪 Port: ${PORT}"
 echo "===================================="
