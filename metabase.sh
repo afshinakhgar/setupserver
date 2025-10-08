@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # === Step 1: Read configuration ===
 read -p "Enter your domain (default: example.com): " DOMAIN
@@ -62,7 +63,7 @@ EOF
 
 # === Step 5: Start Metabase ===
 echo "🚀 Starting Metabase using Docker Compose..."
-docker compose down >/dev/null 2>&1
+docker compose down >/dev/null 2>&1 || true
 docker compose up -d
 
 # === Step 6: Nginx configuration ===
@@ -105,7 +106,7 @@ sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m $EMAIL || true
 # === Step 8: Health Check ===
 echo "🩺 Checking if Metabase is ready..."
 for i in {1..30}; do
-  STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/api/health)
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/api/health || echo "000")
   if [ "$STATUS" == "200" ]; then
     echo "✅ Metabase is healthy and ready!"
     break
@@ -114,7 +115,14 @@ for i in {1..30}; do
   sleep 5
 done
 
-# === Step 9: Final Info ===
+# === Step 9: Show logs if failed ===
+if [ "$STATUS" != "200" ]; then
+  echo "❌ Metabase did not respond with 200 OK."
+  echo "📜 Showing container logs for debugging..."
+  docker logs --tail 50 metabase
+fi
+
+# === Step 10: Final Info ===
 echo ""
 echo "🎉 Metabase setup complete!"
 echo "🌍 URL: https://$DOMAIN/setup/"
