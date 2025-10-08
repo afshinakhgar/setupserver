@@ -61,8 +61,9 @@ echo "🚀 Starting Metabase using docker-compose..."
 docker-compose up -d
 
 # Create Nginx config for the domain
+NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
 echo "🌐 Creating Nginx configuration for domain: $DOMAIN"
-cat <<EOF | sudo tee /etc/nginx/sites-available/metabase
+cat <<EOF | sudo tee $NGINX_CONF
 server {
     listen 80;
     server_name $DOMAIN;
@@ -78,8 +79,10 @@ server {
 }
 EOF
 
-# Enable the Nginx site and reload
-sudo ln -s /etc/nginx/sites-available/metabase /etc/nginx/sites-enabled/
+# Enable the Nginx site
+sudo ln -sf "$NGINX_CONF" "/etc/nginx/sites-enabled/$DOMAIN"
+
+# Test Nginx and reload
 sudo nginx -t && sudo systemctl reload nginx
 
 # Request SSL certificate
