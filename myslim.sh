@@ -9,13 +9,15 @@
 # ======================================================
 
 set -e
+
+# Project name argument (default: doob-api)
 PROJECT_NAME=${1:-"doob-api"}
 
 echo "🚀 Setting up project: $PROJECT_NAME ..."
 
 # Create base directory
-mkdir -p $PROJECT_NAME
-cd $PROJECT_NAME
+mkdir -p "$PROJECT_NAME"
+cd "$PROJECT_NAME"
 
 # ------------------------------------------------------
 # 1. Create folder structure
@@ -151,7 +153,6 @@ EOF
 
 echo "🧩 Creating core app files..."
 
-# Routes
 cat > app/Routes/routes.php <<'EOF'
 <?php
 use Slim\App;
@@ -170,7 +171,6 @@ return function (App $app) {
 };
 EOF
 
-# Response Helper
 cat > app/Helpers/ResponseHelper.php <<'EOF'
 <?php
 namespace App\Helpers;
@@ -185,7 +185,6 @@ class ResponseHelper
 }
 EOF
 
-# Controllers
 cat > app/Controllers/AuthController.php <<'EOF'
 <?php
 namespace App\Controllers;
@@ -327,9 +326,6 @@ require __DIR__ . '/../vendor/autoload.php';
 use Symfony\Component\Console\Application;
 
 $application = new Application('Doob API Console', '1.0.0');
-
-// Future commands will be registered here
-
 $application->run();
 EOF
 
@@ -370,7 +366,7 @@ echo "✅ Doob API structure created successfully!"
 echo ""
 echo "Next steps:"
 echo "---------------------------------------"
-echo "cd doob-api"
+echo "cd $PROJECT_NAME"
 echo "composer install"
 echo "php -S localhost:8080 -t public"
 echo ""
