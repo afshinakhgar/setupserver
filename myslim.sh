@@ -1,8 +1,7 @@
 #!/bin/bash
 
 # ======================================================
-# Doob API Setup Script
-# Author: ChatGPT (GPT-5)
+#  Setup Script
 # Description: Creates a complete Slim 4 API project 
 # with PHP 8.1+, PDO, php-di, symfony/console, monolog,
 # and respect/validation with PostgreSQL as default.
@@ -10,8 +9,8 @@
 
 set -e
 
-# Project name argument (default: doob-api)
-PROJECT_NAME=${1:-"doob-api"}
+# Project name argument (default: my-api)
+PROJECT_NAME=${1:-"my-api"}
 
 echo "🚀 Setting up project: $PROJECT_NAME ..."
 
@@ -36,10 +35,10 @@ mkdir -p public app/Controllers app/DataAccess/{Contracts,Adapters,Repositories}
 
 echo "🧾 Creating .env..."
 
-cat > .env <<'EOF'
+cat > .env <<EOF
 APP_ENV=local
 APP_DEBUG=true
-APP_NAME="Doob API"
+APP_NAME="${PROJECT_NAME} API"
 DB_DRIVER=pgsql
 DB_HOST=localhost
 DB_PORT=5432
@@ -86,7 +85,7 @@ EOF
 
 echo "⚙️ Creating Slim entrypoint..."
 
-cat > public/index.php <<'EOF'
+cat > public/index.php <<EOF
 <?php
 declare(strict_types=1);
 
@@ -95,16 +94,16 @@ use Dotenv\Dotenv;
 
 require __DIR__ . '/../vendor/autoload.php';
 
-$dotenv = Dotenv::createImmutable(__DIR__ . '/../');
-$dotenv->load();
+\$dotenv = Dotenv::createImmutable(__DIR__ . '/../');
+\$dotenv->load();
 
-$container = require __DIR__ . '/../bootstrap/Container.php';
-AppFactory::setContainer($container);
+\$container = require __DIR__ . '/../bootstrap/Container.php';
+AppFactory::setContainer(\$container);
 
-$app = AppFactory::create();
-(require __DIR__ . '/../app/Routes/routes.php')($app);
+\$app = AppFactory::create();
+(require __DIR__ . '/../app/Routes/routes.php')(\$app);
 
-$app->run();
+\$app->run();
 EOF
 
 # ------------------------------------------------------
@@ -113,28 +112,28 @@ EOF
 
 echo "🧱 Creating bootstrap files..."
 
-cat > bootstrap/Container.php <<'EOF'
+cat > bootstrap/Container.php <<EOF
 <?php
 use DI\ContainerBuilder;
 use Monolog\Logger;
 use Monolog\Handler\StreamHandler;
 use App\DataAccess\DatabaseFactory;
 
-$containerBuilder = new ContainerBuilder();
+\$containerBuilder = new ContainerBuilder();
 
-$containerBuilder->addDefinitions([
+\$containerBuilder->addDefinitions([
     Logger::class => function () {
-        $logger = new Logger('doob');
-        $logger->pushHandler(new StreamHandler(__DIR__ . '/../storage/logs/app.log', Logger::DEBUG));
-        return $logger;
+        \$logger = new Logger('${PROJECT_NAME}');
+        \$logger->pushHandler(new StreamHandler(__DIR__ . '/../storage/logs/app.log', Logger::DEBUG));
+        return \$logger;
     },
     PDO::class => function () {
-        $factory = new DatabaseFactory();
-        return $factory->createAdapter();
+        \$factory = new DatabaseFactory();
+        return \$factory->createAdapter();
     }
 ]);
 
-return $containerBuilder->build();
+return \$containerBuilder->build();
 EOF
 
 cat > bootstrap/app.php <<'EOF'
@@ -153,21 +152,21 @@ EOF
 
 echo "🧩 Creating core app files..."
 
-cat > app/Routes/routes.php <<'EOF'
+cat > app/Routes/routes.php <<EOF
 <?php
 use Slim\App;
 use App\Controllers\AuthController;
 use App\Controllers\UserController;
 
-return function (App $app) {
-    $app->get('/', function ($request, $response) {
-        $data = ['status' => 'ok', 'message' => 'Doob API is running'];
-        $response->getBody()->write(json_encode($data));
-        return $response->withHeader('Content-Type', 'application/json');
+return function (App \$app) {
+    \$app->get('/', function (\$request, \$response) {
+        \$data = ['status' => 'ok', 'message' => '${PROJECT_NAME} API is running'];
+        \$response->getBody()->write(json_encode(\$data));
+        return \$response->withHeader('Content-Type', 'application/json');
     });
 
-    $app->get('/users', [UserController::class, 'index']);
-    $app->post('/auth/login', [AuthController::class, 'login']);
+    \$app->get('/users', [UserController::class, 'index']);
+    \$app->post('/auth/login', [AuthController::class, 'login']);
 };
 EOF
 
@@ -318,15 +317,15 @@ cat > Kernel/helpers.php <<'EOF'
 // Global helper functions can be defined here
 EOF
 
-cat > bin/console <<'EOF'
+cat > bin/console <<EOF
 #!/usr/bin/env php
 <?php
 require __DIR__ . '/../vendor/autoload.php';
 
 use Symfony\Component\Console\Application;
 
-$application = new Application('Doob API Console', '1.0.0');
-$application->run();
+\$application = new Application('${PROJECT_NAME} API Console', '1.0.0');
+\$application->run();
 EOF
 
 chmod +x bin/console
@@ -337,12 +336,12 @@ chmod +x bin/console
 
 echo "🧩 Adding configs..."
 
-cat > configs/app.php <<'EOF'
+cat > configs/app.php <<EOF
 <?php
 return [
-    'name' => $_ENV['APP_NAME'] ?? 'Doob API',
-    'env' => $_ENV['APP_ENV'] ?? 'production',
-    'debug' => $_ENV['APP_DEBUG'] ?? false,
+    'name' => \$_ENV['APP_NAME'] ?? '${PROJECT_NAME} API',
+    'env' => \$_ENV['APP_ENV'] ?? 'production',
+    'debug' => \$_ENV['APP_DEBUG'] ?? false,
 ];
 EOF
 
@@ -362,14 +361,14 @@ EOF
 # 10. Final message
 # ------------------------------------------------------
 
-echo "✅ Doob API structure created successfully!"
+echo "✅ ${PROJECT_NAME} structure created successfully!"
 echo ""
 echo "Next steps:"
 echo "---------------------------------------"
-echo "cd $PROJECT_NAME"
+echo "cd ${PROJECT_NAME}"
 echo "composer install"
 echo "php -S localhost:8080 -t public"
 echo ""
 echo "Then open: http://localhost:8080"
 echo ""
-echo "🎉 Enjoy your new Slim 4 Doob API!"
+echo "🎉 Enjoy your new Slim 4 ${PROJECT_NAME}"
