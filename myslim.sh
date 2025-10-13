@@ -1,40 +1,32 @@
 #!/bin/bash
 
 # ======================================================
-#  Setup Script
-# Description: Creates a complete Slim 4 API project 
-# with PHP 8.1+, PDO, php-di, symfony/console, monolog,
-# and respect/validation with PostgreSQL as default.
+#  Slim 4 API Setup Script (PHP 8.1+)
+#  Includes PDO, php-di, symfony/console, monolog,
+#  respect/validation, PostgreSQL (default), and CLI Kernel
 # ======================================================
 
 set -e
 
-# Project name argument (default: my-api)
 PROJECT_NAME=${1:-"my-api"}
 
 echo "🚀 Setting up project: $PROJECT_NAME ..."
 
-# Create base directory
 mkdir -p "$PROJECT_NAME"
 cd "$PROJECT_NAME"
 
 # ------------------------------------------------------
-# 1. Create folder structure
+# Folder Structure
 # ------------------------------------------------------
-
 echo "📂 Creating folder structure..."
-
-mkdir -p public app/Controllers app/DataAccess/{Contracts,Adapters,Repositories} \
-         app/Services app/Routes app/Helpers \
+mkdir -p public app/{Controllers,Services,Routes,Helpers,DataAccess/{Contracts,Adapters,Repositories}} \
          Kernel/{Console/Commands,Database,Security,Validation} \
          bootstrap configs database/migrations docs storage/logs bin vendor
 
 # ------------------------------------------------------
-# 2. Create .env file
+# .env
 # ------------------------------------------------------
-
 echo "🧾 Creating .env..."
-
 cat > .env <<EOF
 APP_ENV=local
 APP_DEBUG=true
@@ -49,11 +41,9 @@ JWT_SECRET=your_jwt_secret_here
 EOF
 
 # ------------------------------------------------------
-# 3. Create composer.json
+# composer.json
 # ------------------------------------------------------
-
 echo "📦 Creating composer.json..."
-
 cat > composer.json <<'EOF'
 {
   "require": {
@@ -80,11 +70,9 @@ cat > composer.json <<'EOF'
 EOF
 
 # ------------------------------------------------------
-# 4. Create public/index.php
+# public/index.php
 # ------------------------------------------------------
-
 echo "⚙️ Creating Slim entrypoint..."
-
 cat > public/index.php <<EOF
 <?php
 declare(strict_types=1);
@@ -94,24 +82,23 @@ use Dotenv\Dotenv;
 
 require __DIR__ . '/../vendor/autoload.php';
 
+// Load environment
 \$dotenv = Dotenv::createImmutable(__DIR__ . '/../');
 \$dotenv->load();
 
-\$container = require __DIR__ . '/../bootstrap/Container.php';
-AppFactory::setContainer(\$container);
+// Bootstrap the app
+\$app = require __DIR__ . '/../bootstrap/app.php';
 
-\$app = AppFactory::create();
+// Register routes
 (require __DIR__ . '/../app/Routes/routes.php')(\$app);
 
 \$app->run();
 EOF
 
 # ------------------------------------------------------
-# 5. Create bootstrap files
+# bootstrap/Container.php
 # ------------------------------------------------------
-
-echo "🧱 Creating bootstrap files..."
-
+echo "🧱 Creating Container..."
 cat > bootstrap/Container.php <<EOF
 <?php
 use DI\ContainerBuilder;
@@ -136,21 +123,41 @@ use App\DataAccess\DatabaseFactory;
 return \$containerBuilder->build();
 EOF
 
-cat > bootstrap/app.php <<'EOF'
+# ------------------------------------------------------
+# bootstrap/app.php
+# ------------------------------------------------------
+echo "🧩 Creating bootstrap/app.php..."
+cat > bootstrap/app.php <<EOF
 <?php
+declare(strict_types=1);
+
+use Slim\Factory\AppFactory;
+use Dotenv\Dotenv;
+
+// Load Composer
 require_once __DIR__ . '/../vendor/autoload.php';
-EOF
 
-cat > bootstrap/database.php <<'EOF'
-<?php
-// Placeholder for database configuration bootstrapping
+// Load .env
+if (file_exists(__DIR__ . '/../.env')) {
+    \$dotenv = Dotenv::createImmutable(__DIR__ . '/../');
+    \$dotenv->load();
+}
+
+// Build Container
+\$container = require __DIR__ . '/Container.php';
+AppFactory::setContainer(\$container);
+
+// Create Slim app
+\$app = AppFactory::create();
+
+// Return both for reuse (web/CLI)
+return \$app;
 EOF
 
 # ------------------------------------------------------
-# 6. Create app files
+# Routes and Controllers
 # ------------------------------------------------------
-
-echo "🧩 Creating core app files..."
+echo "🧠 Creating base routes and controllers..."
 
 cat > app/Routes/routes.php <<EOF
 <?php
@@ -225,98 +232,9 @@ class UserController
 EOF
 
 # ------------------------------------------------------
-# 7. Database Layer
+# bin/console
 # ------------------------------------------------------
-
-echo "🗄️ Creating Database Adapter Layer..."
-
-cat > app/DataAccess/Contracts/DatabaseAdapterInterface.php <<'EOF'
-<?php
-namespace App\DataAccess\Contracts;
-
-interface DatabaseAdapterInterface
-{
-    public function getConnection();
-}
-EOF
-
-cat > app/DataAccess/Adapters/PostgresAdapter.php <<'EOF'
-<?php
-namespace App\DataAccess\Adapters;
-
-use App\DataAccess\Contracts\DatabaseAdapterInterface;
-use PDO;
-
-class PostgresAdapter implements DatabaseAdapterInterface
-{
-    public function getConnection()
-    {
-        $dsn = sprintf(
-            'pgsql:host=%s;port=%s;dbname=%s',
-            $_ENV['DB_HOST'],
-            $_ENV['DB_PORT'],
-            $_ENV['DB_DATABASE']
-        );
-        return new PDO($dsn, $_ENV['DB_USERNAME'], $_ENV['DB_PASSWORD']);
-    }
-}
-EOF
-
-cat > app/DataAccess/Adapters/MysqlAdapter.php <<'EOF'
-<?php
-namespace App\DataAccess\Adapters;
-
-use App\DataAccess\Contracts\DatabaseAdapterInterface;
-use PDO;
-
-class MysqlAdapter implements DatabaseAdapterInterface
-{
-    public function getConnection()
-    {
-        $dsn = sprintf(
-            'mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
-            $_ENV['DB_HOST'],
-            $_ENV['DB_PORT'],
-            $_ENV['DB_DATABASE']
-        );
-        return new PDO($dsn, $_ENV['DB_USERNAME'], $_ENV['DB_PASSWORD']);
-    }
-}
-EOF
-
-cat > app/DataAccess/DatabaseFactory.php <<'EOF'
-<?php
-namespace App\DataAccess;
-
-use App\DataAccess\Adapters\PostgresAdapter;
-use App\DataAccess\Adapters\MysqlAdapter;
-use App\DataAccess\Contracts\DatabaseAdapterInterface;
-
-class DatabaseFactory
-{
-    public function createAdapter(): DatabaseAdapterInterface
-    {
-        $driver = $_ENV['DB_DRIVER'] ?? 'pgsql';
-
-        return match ($driver) {
-            'mysql' => new MysqlAdapter(),
-            default => new PostgresAdapter(),
-        };
-    }
-}
-EOF
-
-# ------------------------------------------------------
-# 8. Kernel + Console + Helpers
-# ------------------------------------------------------
-
-echo "🧠 Creating Kernel structure..."
-
-cat > Kernel/helpers.php <<'EOF'
-<?php
-// Global helper functions can be defined here
-EOF
-
+echo "🧩 Creating CLI Console..."
 cat > bin/console <<EOF
 #!/usr/bin/env php
 <?php
@@ -324,18 +242,28 @@ require __DIR__ . '/../vendor/autoload.php';
 
 use Symfony\Component\Console\Application;
 
-\$application = new Application('${PROJECT_NAME} API Console', '1.0.0');
+// Bootstrap Slim app and container
+\$app = require __DIR__ . '/../bootstrap/app.php';
+\$container = \$app->getContainer();
+
+// Initialize Symfony Console
+\$application = new Application('${PROJECT_NAME} CLI', '1.0.0');
+
+// Load CLI Kernel (you can expand with commands)
+if (class_exists('Kernel\\Console\\Kernel')) {
+    \$kernel = new Kernel\\Console\\Kernel(\$application, \$app, \$container);
+    \$kernel->register();
+}
+
 \$application->run();
 EOF
 
 chmod +x bin/console
 
 # ------------------------------------------------------
-# 9. Config files
+# Configs
 # ------------------------------------------------------
-
-echo "🧩 Adding configs..."
-
+echo "🧾 Adding configs..."
 cat > configs/app.php <<EOF
 <?php
 return [
@@ -358,9 +286,9 @@ return [
 EOF
 
 # ------------------------------------------------------
-# 10. Final message
+# Final Message
 # ------------------------------------------------------
-
+echo ""
 echo "✅ ${PROJECT_NAME} structure created successfully!"
 echo ""
 echo "Next steps:"
@@ -369,6 +297,8 @@ echo "cd ${PROJECT_NAME}"
 echo "composer install"
 echo "php -S localhost:8080 -t public"
 echo ""
-echo "Then open: http://localhost:8080"
+echo "or run CLI:"
+echo "./bin/console"
 echo ""
-echo "🎉 Enjoy your new Slim 4 ${PROJECT_NAME}"
+echo "Then open: http://localhost:8080"
+echo "🎉 Enjoy your new Slim 4 + PHP-DI ${PROJECT_NAME} API"
