@@ -36,3 +36,10 @@ bash <(wget -qO- https://raw.githubusercontent.com/afshinakhgar/setupserver/mast
 bash <(curl -s https://raw.githubusercontent.com/afshinakhgar/setupserver/master/metabase.sh)
 
 
+
+--- my slim4
+
+bash <(wget -qO- https://raw.githubusercontent.com/afshinakhgar/setupserver/master/setup.sh) myproject
+
+
+
