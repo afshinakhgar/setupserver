@@ -1,60 +1,51 @@
 #!/bin/bash
-
-# ======================================================
-#  Slim 4 API Setup Script (PHP 8.1+)
-#  Includes PDO, php-di, symfony/console, monolog,
-#  respect/validation, PostgreSQL (default), and CLI Kernel
-# ======================================================
-
 set -e
 
-PROJECT_NAME=${1:-"my-api"}
+PROJECT_NAME=${1:-"doob-api"}
 
 echo "🚀 Setting up project: $PROJECT_NAME ..."
 
+# Create base directory
 mkdir -p "$PROJECT_NAME"
 cd "$PROJECT_NAME"
 
-# ------------------------------------------------------
-# Folder Structure
-# ------------------------------------------------------
-echo "📂 Creating folder structure..."
-mkdir -p public app/{Controllers,Services,Routes,Helpers,DataAccess/{Contracts,Adapters,Repositories}} \
-         Kernel/{Console/Commands,Database,Security,Validation} \
-         bootstrap configs database/migrations docs storage/logs bin vendor
+# Folder structure
+mkdir -p public app/{Controllers,Routes,Helpers,DataAccess/{Contracts,Adapters,Repositories}} \
+         Kernel/{Console/Commands} bootstrap config storage/logs bin vendor
 
-# ------------------------------------------------------
+# ----------------------------------------------------------------
 # .env
-# ------------------------------------------------------
-echo "🧾 Creating .env..."
+# ----------------------------------------------------------------
 cat > .env <<EOF
 APP_ENV=local
 APP_DEBUG=true
-APP_NAME="${PROJECT_NAME} API"
-DB_DRIVER=pgsql
+APP_NAME="$PROJECT_NAME"
+DB_DRIVER=mysql
 DB_HOST=localhost
-DB_PORT=5432
-DB_DATABASE=localdb
+DB_PORT=3306
+DB_DATABASE=${PROJECT_NAME}_db
 DB_USERNAME=root
 DB_PASSWORD=root
-JWT_SECRET=your_jwt_secret_here
+ELASTIC_PASSWORD=changeme
 EOF
 
-# ------------------------------------------------------
+# ----------------------------------------------------------------
 # composer.json
-# ------------------------------------------------------
-echo "📦 Creating composer.json..."
+# ----------------------------------------------------------------
 cat > composer.json <<'EOF'
 {
   "require": {
     "php": "^8.1",
+    "ext-pdo": "*",
     "slim/slim": "^4.13",
     "slim/psr7": "^1.6",
     "vlucas/phpdotenv": "^5.6",
     "php-di/php-di": "^7.0",
     "monolog/monolog": "^3",
     "symfony/console": "^7.1",
-    "respect/validation": "^2.2"
+    "respect/validation": "^2.2",
+    "elasticsearch/elasticsearch": "^8.19",
+    "guzzlehttp/guzzle": "^7"
   },
   "autoload": {
     "psr-4": {
@@ -65,240 +56,244 @@ cat > composer.json <<'EOF'
     "files": [
       "Kernel/helpers.php"
     ]
+  },
+  "config": {
+    "allow-plugins": {
+      "php-http/discovery": true
+    }
   }
 }
 EOF
 
-# ------------------------------------------------------
-# public/index.php
-# ------------------------------------------------------
-echo "⚙️ Creating Slim entrypoint..."
-cat > public/index.php <<EOF
-<?php
-declare(strict_types=1);
-
-use Slim\Factory\AppFactory;
-use Dotenv\Dotenv;
-
-require __DIR__ . '/../vendor/autoload.php';
-
-// Load environment
-\$dotenv = Dotenv::createImmutable(__DIR__ . '/../');
-\$dotenv->load();
-
-// Bootstrap the app
-\$app = require __DIR__ . '/../bootstrap/app.php';
-
-// Register routes
-(require __DIR__ . '/../app/Routes/routes.php')(\$app);
-
-\$app->run();
-EOF
-
-# ------------------------------------------------------
-# bootstrap/Container.php
-# ------------------------------------------------------
-echo "🧱 Creating Container..."
-cat > bootstrap/Container.php <<EOF
+# ----------------------------------------------------------------
+# bootstrap/container.php
+# ----------------------------------------------------------------
+cat > bootstrap/container.php <<'EOF'
 <?php
 use DI\ContainerBuilder;
+use Elastic\Elasticsearch\ClientBuilder;
 use Monolog\Logger;
 use Monolog\Handler\StreamHandler;
-use App\DataAccess\DatabaseFactory;
 
-\$containerBuilder = new ContainerBuilder();
+$containerBuilder = new ContainerBuilder();
+$root = dirname(__DIR__);
 
-\$containerBuilder->addDefinitions([
-    Logger::class => function () {
-        \$logger = new Logger('${PROJECT_NAME}');
-        \$logger->pushHandler(new StreamHandler(__DIR__ . '/../storage/logs/app.log', Logger::DEBUG));
-        return \$logger;
-    },
-    PDO::class => function () {
-        \$factory = new DatabaseFactory();
-        return \$factory->createAdapter();
+class KibanaFormatter extends \Monolog\Formatter\ElasticsearchFormatter {
+    public function __construct(string $index, string $type) {
+        parent::__construct($index, $type);
+        $this->setDateFormat('c');
     }
+
+    public function format(array|\Monolog\LogRecord $record): array {
+        $doc = parent::format($record);
+        if (isset($doc['datetime'])) {
+            $doc['@timestamp'] = $doc['datetime'];
+            unset($doc['datetime']);
+        }
+        return $doc;
+    }
+}
+
+$containerBuilder->addDefinitions([
+    'config.app' => fn() => require $root.'/config/app.php',
+    'config.db'  => fn() => require $root.'/config/database.php',
+
+    'elastic.client' => function () {
+        return ClientBuilder::create()
+            ->setHosts(['https://log.dotroot.ir/ingest'])
+            ->setBasicAuthentication('elastic', env('ELASTIC_PASSWORD'))
+            ->setElasticMetaHeader(false)
+            ->setSSLVerification(true)
+            ->build();
+    },
+
+    'elasticsearch.handler' => function ($c) {
+        $client = $c->get('elastic.client');
+        $handler = new \Monolog\Handler\ElasticsearchHandler(
+            $client,
+            ['index' => 'nginx-realaffiliate'],
+            Logger::DEBUG,
+            true
+        );
+        $handler->setFormatter(new KibanaFormatter('nginx-realaffiliate', '_doc'));
+        return $handler;
+    },
+
+    \Psr\Log\LoggerInterface::class => function ($c) use ($root) {
+        $cfg  = $c->get('config.app');
+        $path = $cfg['log_path'] ?? ($root.'/storage/logs/app.log');
+        if (!is_dir(dirname($path))) mkdir(dirname($path), 0755, true);
+
+        $logger = new Logger($cfg['log_channel'] ?? 'app');
+        $logger->pushHandler(new StreamHandler($path, Logger::DEBUG));
+        $logger->pushHandler($c->get('elasticsearch.handler'));
+        return $logger;
+    },
+
+    \PDO::class => function ($c) {
+        $cfg = $c->get('config.db');
+        $dsn = sprintf(
+            'mysql:host=%s;port=%s;dbname=%s;charset=%s',
+            $cfg['host'] ?? '127.0.0.1',
+            $cfg['port'] ?? '3306',
+            $cfg['database'] ?? 'app',
+            $cfg['charset'] ?? 'utf8mb4'
+        );
+        return new \PDO($dsn, $cfg['username'] ?? 'root', $cfg['password'] ?? '', [
+            \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+            \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
+            \PDO::ATTR_EMULATE_PREPARES => false,
+        ]);
+    },
 ]);
 
-return \$containerBuilder->build();
+return $containerBuilder->build();
 EOF
 
-# ------------------------------------------------------
+# ----------------------------------------------------------------
 # bootstrap/app.php
-# ------------------------------------------------------
-echo "🧩 Creating bootstrap/app.php..."
-cat > bootstrap/app.php <<EOF
+# ----------------------------------------------------------------
+cat > bootstrap/app.php <<'EOF'
 <?php
 declare(strict_types=1);
 
 use Slim\Factory\AppFactory;
 use Dotenv\Dotenv;
 
-// Load Composer
 require_once __DIR__ . '/../vendor/autoload.php';
 
-// Load .env
-if (file_exists(__DIR__ . '/../.env')) {
-    \$dotenv = Dotenv::createImmutable(__DIR__ . '/../');
-    \$dotenv->load();
+$root = dirname(__DIR__);
+
+if (file_exists($root.'/.env')) {
+    Dotenv::createImmutable($root)->load();
 }
 
-// Build Container
-\$container = require __DIR__ . '/Container.php';
-AppFactory::setContainer(\$container);
+$container = require __DIR__ . '/container.php';
+AppFactory::setContainer($container);
 
-// Create Slim app
-\$app = AppFactory::create();
+$app = AppFactory::create();
+$app->addRoutingMiddleware();
+$app->addBodyParsingMiddleware();
 
-// Return both for reuse (web/CLI)
-return \$app;
+$displayErrorDetails = $container->get('config.app')['debug'] ?? false;
+$app->addErrorMiddleware(boolval($displayErrorDetails), true, true);
+
+$app->get('/health', function ($request, $response) {
+    $response->getBody()->write(json_encode(['status' => 'ok']));
+    return $response->withHeader('Content-Type', 'application/json');
+});
+
+(require __DIR__ . '/../app/Routes/routes.php')($app);
+
+return $app;
 EOF
 
-# ------------------------------------------------------
-# Routes and Controllers
-# ------------------------------------------------------
-echo "🧠 Creating base routes and controllers..."
+# ----------------------------------------------------------------
+# Kernel Console
+# ----------------------------------------------------------------
+mkdir -p Kernel/Console/Commands
 
-cat > app/Routes/routes.php <<EOF
+cat > Kernel/Console/Commands/RouteListCommand.php <<'EOF'
 <?php
+namespace Kernel\Console\Commands;
+
 use Slim\App;
-use App\Controllers\AuthController;
-use App\Controllers\UserController;
+use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Helper\Table;
 
-return function (App \$app) {
-    \$app->get('/', function (\$request, \$response) {
-        \$data = ['status' => 'ok', 'message' => '${PROJECT_NAME} API is running'];
-        \$response->getBody()->write(json_encode(\$data));
-        return \$response->withHeader('Content-Type', 'application/json');
-    });
-
-    \$app->get('/users', [UserController::class, 'index']);
-    \$app->post('/auth/login', [AuthController::class, 'login']);
-};
-EOF
-
-cat > app/Helpers/ResponseHelper.php <<'EOF'
-<?php
-namespace App\Helpers;
-
-class ResponseHelper
+#[AsCommand(name: 'route:list', description: 'List all registered routes')]
+class RouteListCommand extends Command
 {
-    public static function json($response, $data, int $status = 200)
+    public function __construct(private App $app)
     {
-        $response->getBody()->write(json_encode($data));
-        return $response->withStatus($status)->withHeader('Content-Type', 'application/json');
+        parent::__construct();
+    }
+
+    protected function execute(InputInterface $input, OutputInterface $output): int
+    {
+        $routes = $this->app->getRouteCollector()->getRoutes();
+        $table = new Table($output);
+        $table->setHeaders(['METHODS', 'PATTERN', 'NAME', 'CALLABLE']);
+
+        foreach ($routes as $r) {
+            $methods = implode('|', $r->getMethods());
+            $pattern = $r->getPattern();
+            $name = $r->getName() ?? '';
+            $cb = $r->getCallable();
+
+            if (is_string($cb)) $cbStr = $cb;
+            elseif (is_array($cb)) {
+                $cls = is_object($cb[0]) ? get_class($cb[0]) : (string)$cb[0];
+                $cbStr = $cls . '@' . ($cb[1] ?? '');
+            } elseif ($cb instanceof \Closure) $cbStr = 'Closure';
+            else $cbStr = is_object($cb) ? get_class($cb) : gettype($cb);
+
+            $table->addRow([$methods, $pattern, $name, $cbStr]);
+        }
+
+        $table->render();
+        return Command::SUCCESS;
     }
 }
 EOF
 
-cat > app/Controllers/AuthController.php <<'EOF'
+cat > Kernel/Console/Kernel.php <<'EOF'
 <?php
-namespace App\Controllers;
+namespace Kernel\Console;
 
-use App\Helpers\ResponseHelper;
+use Symfony\Component\Console\Application;
+use Slim\App;
+use Psr\Container\ContainerInterface;
+use Kernel\Console\Commands\RouteListCommand;
 
-class AuthController
+class Kernel
 {
-    public function login($request, $response)
+    public function __construct(
+        private Application $cli,
+        private App $app,
+        private ContainerInterface $container
+    ) {}
+
+    public function register(): void
     {
-        $params = (array)$request->getParsedBody();
-        $data = [
-            'status' => 'success',
-            'message' => 'User logged in successfully',
-            'user' => $params['username'] ?? 'guest'
-        ];
-        return ResponseHelper::json($response, $data);
+        $this->cli->add(new RouteListCommand($this->app));
     }
 }
 EOF
 
-cat > app/Controllers/UserController.php <<'EOF'
-<?php
-namespace App\Controllers;
-
-use App\Helpers\ResponseHelper;
-
-class UserController
-{
-    public function index($request, $response)
-    {
-        $users = [
-            ['id' => 1, 'name' => 'John Doe'],
-            ['id' => 2, 'name' => 'Jane Smith']
-        ];
-        return ResponseHelper::json($response, ['users' => $users]);
-    }
-}
-EOF
-
-# ------------------------------------------------------
+# ----------------------------------------------------------------
 # bin/console
-# ------------------------------------------------------
-echo "🧩 Creating CLI Console..."
-cat > bin/console <<EOF
+# ----------------------------------------------------------------
+cat > bin/console <<'EOF'
 #!/usr/bin/env php
 <?php
+declare(strict_types=1);
+
 require __DIR__ . '/../vendor/autoload.php';
 
 use Symfony\Component\Console\Application;
+use Kernel\Console\Kernel;
 
-// Bootstrap Slim app and container
-\$app = require __DIR__ . '/../bootstrap/app.php';
-\$container = \$app->getContainer();
+$app = require __DIR__ . '/../bootstrap/app.php';
+$container = $app->getContainer();
 
-// Initialize Symfony Console
-\$application = new Application('${PROJECT_NAME} CLI', '1.0.0');
+$application = new Application('Doob API CLI', '1.0.0');
 
-// Load CLI Kernel (you can expand with commands)
-if (class_exists('Kernel\\Console\\Kernel')) {
-    \$kernel = new Kernel\\Console\\Kernel(\$application, \$app, \$container);
-    \$kernel->register();
-}
+$kernel = new Kernel($application, $app, $container);
+$kernel->register();
 
-\$application->run();
+$application->run();
 EOF
-
 chmod +x bin/console
 
-# ------------------------------------------------------
-# Configs
-# ------------------------------------------------------
-echo "🧾 Adding configs..."
-cat > configs/app.php <<EOF
-<?php
-return [
-    'name' => \$_ENV['APP_NAME'] ?? '${PROJECT_NAME} API',
-    'env' => \$_ENV['APP_ENV'] ?? 'production',
-    'debug' => \$_ENV['APP_DEBUG'] ?? false,
-];
-EOF
-
-cat > configs/database.php <<'EOF'
-<?php
-return [
-    'driver' => $_ENV['DB_DRIVER'] ?? 'pgsql',
-    'host' => $_ENV['DB_HOST'] ?? 'localhost',
-    'port' => $_ENV['DB_PORT'] ?? '5432',
-    'database' => $_ENV['DB_DATABASE'] ?? 'localdb',
-    'username' => $_ENV['DB_USERNAME'] ?? 'root',
-    'password' => $_ENV['DB_PASSWORD'] ?? 'root',
-];
-EOF
-
-# ------------------------------------------------------
-# Final Message
-# ------------------------------------------------------
-echo ""
-echo "✅ ${PROJECT_NAME} structure created successfully!"
-echo ""
-echo "Next steps:"
-echo "---------------------------------------"
-echo "cd ${PROJECT_NAME}"
-echo "composer install"
+# ----------------------------------------------------------------
+# Done
+# ----------------------------------------------------------------
+echo "✅ Project $PROJECT_NAME created successfully."
+echo "Run the following next:"
+echo "cd $PROJECT_NAME && composer install"
 echo "php -S localhost:8080 -t public"
-echo ""
-echo "or run CLI:"
-echo "./bin/console"
-echo ""
-echo "Then open: http://localhost:8080"
-echo "🎉 Enjoy your new Slim 4 + PHP-DI ${PROJECT_NAME} API"
+echo "bin/console route:list"
